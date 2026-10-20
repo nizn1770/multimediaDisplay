@@ -9,6 +9,9 @@ def load_config(path=None):
     path = path or os.environ.get("PITV_CONFIG", os.path.join(os.path.dirname(__file__), "..", "config.local.yaml"))
     if os.path.exists(path):
         _merge(cfg, yaml.safe_load(open(path)) or {})
+    for k in ("on_at", "off_at"):  # unquoted 06:30 in YAML 1.1 parses as base-60 int (390)
+        v = cfg["night"].get(k)
+        if isinstance(v, int): cfg["night"][k] = f"{v // 60:02d}:{v % 60:02d}"
     if os.environ.get("PITV_MOCK"):
         cfg["mock"] = os.environ["PITV_MOCK"] not in ("0", "false")
     return cfg
@@ -20,3 +23,32 @@ def calendars(cfg):
     items = c.get("calendars") or [{"id": i} for i in c.get("calendar_ids", [])]
     return [{"id": x["id"], "name": x.get("name", x["id"]), "color": x.get("color", PALETTE[i % len(PALETTE)])}
             for i, x in enumerate(items)]
+
+import re, tempfile
+HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+def local_path():
+    return os.environ.get("PITV_CONFIG", os.path.join(os.path.dirname(__file__), "..", "config.local.yaml"))
+def validate_hours(on_at, off_at):
+    for v in (on_at, off_at):
+        if not isinstance(v, str) or not HHMM.match(v):
+            raise ValueError(f"time must be HH:MM (24h), got {v!r}")
+    if on_at == off_at:
+        raise ValueError("on and off times must differ")
+class _Dumper(yaml.SafeDumper): pass
+def _str(d, v):  # always quote strings like 06:30 (YAML 1.1 would read them as base-60 ints)
+    style = '"' if (HHMM.match(v) or ":" in v) else None
+    return d.represent_scalar("tag:yaml.org,2002:str", v, style=style)
+_Dumper.add_representer(str, _str)
+def save_local(updates, path=None):
+    """Deep-merge updates into config.local.yaml atomically (preserves other keys)."""
+    path = path or local_path()
+    cur = (yaml.safe_load(open(path)) or {}) if os.path.exists(path) else {}
+    _merge(cur, updates)
+    d = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".cfg-", suffix=".yaml")
+    with os.fdopen(fd, "w") as f:
+        yaml.dump(cur, f, Dumper=_Dumper, sort_keys=False, allow_unicode=True)
+    if os.path.exists(path):
+        os.chmod(tmp, os.stat(path).st_mode & 0o777)
+    os.replace(tmp, path)
+    return cur

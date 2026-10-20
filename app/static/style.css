@@ -7,7 +7,7 @@ html,body{margin:0;height:100%;background:#000;color:#fff;font-family:sans-serif
 .day{background:#222;padding:4px;overflow:hidden;font-size:1.8vh}.day.today{outline:3px solid #4af}.day.other{opacity:.4}
 .day b{display:block}.ev{background:#335;margin:2px 0;padding:1px 3px;border-radius:3px;white-space:nowrap;overflow:hidden}.ev.allday{background:#4a6}
 .hidden{display:none!important}
-#hud{position:absolute;right:2vw;bottom:2vh;text-align:right;text-shadow:0 0 8px #000}
+#hud{position:absolute;right:2vw;bottom:2vh;text-align:right;background:rgba(0,0,0,.45);padding:1vh 1vw;border-radius:6px}
 #clock{font-size:8vh}#date,#weather{font-size:3vh}#err{color:#f88;font-size:1.6vh}
 #night{position:absolute;inset:0;background:#000;z-index:10}
 #forecast{font-size:2.2vh;display:flex;gap:1.5vw;justify-content:flex-end}

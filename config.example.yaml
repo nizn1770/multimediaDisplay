@@ -8,6 +8,7 @@ drive:
   folder_id: "YOUR_DRIVE_FOLDER_ID"
   sync_interval_sec: 300
   cache_dir: ./cache/photos
+  max_cache_mb: 500              # oldest photos dropped beyond this
 calendar:
   # One or more calendars; color is used in the UI.
   calendars:
@@ -22,6 +23,9 @@ credentials:
   oauth_token_file: ./secrets/token.json
 slideshow:
   seconds_per_photo: 15
+  max_width: 1920                # photos are downscaled + EXIF-rotated at sync time (use 1280x720 on a 720p TV)
+  max_height: 1080
+  jpeg_quality: 85
 weather:
   enabled: true
   location_name: Minneapolis, MN
@@ -29,10 +33,14 @@ weather:
   longitude: -93.2650
   units: fahrenheit
   forecast_days: 3
-night:
+night:                           # screen hours (America/Chicago); editable at /settings or ./pitv set-hours
   enabled: true
   off_at: "23:00"
   on_at: "06:30"
+  control_display: true          # app runs scripts/screen.sh on/off at these times (HDMI/CEC)
+  screen_command: ./scripts/screen.sh
+settings:
+  pin: ""                        # optional PIN for /settings (set it in config.local.yaml)
 server:
-  host: 127.0.0.1
+  host: 0.0.0.0                 # LAN-reachable; /settings is restricted to private IPs
   port: 8080

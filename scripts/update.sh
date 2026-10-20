@@ -12,6 +12,6 @@ echo "updating $OLD -> $NEW"
 git reset --hard "$NEW"   # local edits on the Pi are overwritten; config.yaml/secrets/cache are gitignored
 if ! git diff --quiet "$OLD" "$NEW" -- requirements.txt; then .venv/bin/pip install -q -r requirements.txt; fi
 sudo systemctl restart pitv.service
-for i in $(seq 1 20); do curl -fs http://127.0.0.1:8080/healthz >/dev/null && { echo ok; exit 0; }; sleep 1; done
+for _ in $(seq 1 20); do curl -fs http://127.0.0.1:8080/healthz >/dev/null && { echo ok; exit 0; }; sleep 1; done
 echo "health check failed; rolling back to $OLD" >&2
 git reset --hard "$OLD"; sudo systemctl restart pitv.service; exit 1

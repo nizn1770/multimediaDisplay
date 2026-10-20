@@ -1,0 +1,26 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pi TV settings</title><style>
+body{font-family:sans-serif;max-width:480px;margin:2em auto;padding:0 1em;background:#111;color:#eee}
+label{display:block;margin:.8em 0}input{font-size:1.2em}button{font-size:1.1em;margin:.3em .3em 0 0;padding:.4em .8em}
+#msg{margin-top:1em}.err{color:#f77}.ok{color:#7f7}fieldset{border:1px solid #444;margin:1em 0}</style></head><body>
+<h1>Pi TV settings</h1>
+<fieldset><legend>Screen hours (America/Chicago)</legend>
+<label>Screen on at <input type="time" id="on_at" required></label>
+<label>Screen off at <input type="time" id="off_at" required></label>
+<label><input type="checkbox" id="enabled"> Turn screen off at night</label>
+<label id="pinrow" hidden>PIN <input type="password" id="pin" inputmode="numeric"></label>
+<button onclick="save()">Save</button></fieldset>
+<fieldset><legend>Display control</legend>
+<button onclick="ctl('prev')">◀ Prev</button><button onclick="ctl('next')">Next ▶</button>
+<button onclick="ctl('pause')">Pause</button><button onclick="ctl('resume')">Resume</button><br>
+<button onclick="ctl('photos')">Photos</button><button onclick="ctl('week')">Week</button><button onclick="ctl('month')">Month</button>
+</fieldset><div id="msg"></div>
+<script>
+const $=i=>document.getElementById(i);
+function msg(t,ok){$('msg').textContent=t;$('msg').className=ok?'ok':'err'}
+async function post(u,b){b.pin=$('pin').value;const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+ const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||(r.status===401?'Wrong PIN':'Error '+r.status));return d}
+async function save(){try{await post('/api/settings',{on_at:$('on_at').value,off_at:$('off_at').value,enabled:$('enabled').checked});msg('Saved. Takes effect immediately.',1)}catch(e){msg(e.message)}}
+async function ctl(a){try{await post('/api/control',{action:a});msg('Sent: '+a,1)}catch(e){msg(e.message)}}
+fetch('/api/settings').then(r=>r.json()).then(d=>{$('on_at').value=d.on_at;$('off_at').value=d.off_at;$('enabled').checked=d.enabled;$('pinrow').hidden=!d.pin_required});
+</script></body></html>

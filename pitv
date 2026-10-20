@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# CLI: ./pitv set-hours ON OFF | show-config | screen on|off | control ACTION | status
+DIR="$(cd "$(dirname "$0")" && pwd)"; PY="$DIR/.venv/bin/python"; [ -x "$PY" ] || PY=python3
+exec "$PY" "$DIR/app/cli.py" "$@"

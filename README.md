@@ -7,10 +7,13 @@ Raspberry Pi–driven TV display: Google Drive photo slideshow, weekly/monthly G
 app/server.py     Flask app + API (/api/photos, /api/events, /api/status, /photos/<f>, /healthz)
 app/services.py   PhotoSync (Drive -> local cache), CalendarService (tz-normalised events), night schedule
 app/clients.py    Google Drive/Calendar clients + MockDrive/MockCalendar (fixtures)
-app/static/       Kiosk web UI (slideshow; every 8 photos shows week, then month view)
+app/static/       Kiosk web UI + settings.html; (slideshow; every 8 photos shows week, then month view)
 fixtures/         Sample photos + events (relative to today: timed, all-day, multi-day, overnight, UTC)
-deploy/           systemd units: pitv.service, pitv-update.{service,timer}, pitv-screen@.service
-scripts/          update.sh (git pull/redeploy/rollback), kiosk.sh, screen.sh, oauth_login.py
+install.sh        one-command Pi installer (--dry-run)
+pitv              CLI (set-hours, show-config, screen, control, status)
+docs/             PI_SETUP.md (beginner guide), SERVICE_ACCOUNT_SETUP.txt
+deploy/           reference systemd units (install.sh generates the real ones with correct paths)
+scripts/          update.sh (git pull/redeploy/rollback), kiosk.sh, screen.sh, check_secrets.py, install_hooks.sh, oauth_login.py
 tests/            pytest suite
 ```
 
@@ -24,27 +27,12 @@ PITV_MOCK=1 .venv/bin/python -m app.server     # open http://127.0.0.1:8080
 Mock is also the default in `config.example.yaml` (`mock: true`).
 
 ## Pi setup
-1. Flash **Raspberry Pi OS (64-bit, Bookworm) with Desktop** using Raspberry Pi Imager; in its settings enable SSH, set user `pi`, Wi-Fi, and hostname (e.g. `pitv`).
-2. `sudo apt update && sudo apt install -y git python3-venv chromium-browser curl wlr-randr cec-utils`
-3. `git clone https://github.com/nizn1770/multimediaDisplay.git ~/pi-tv-display && cd ~/pi-tv-display`
-4. `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
-5. `cp config.example.yaml config.local.yaml` and edit it (see Config). `config.local.yaml` and `secrets/` are gitignored — real IDs/keys live only there.
-6. Install services:
+**New Pi? Follow [docs/PI_SETUP.md](docs/PI_SETUP.md)** (blank Pi 3B+ → running display). Short version, on Raspberry Pi OS Lite (64-bit, Bookworm) with user `pi` and hostname `pitv`:
 ```bash
-sudo cp deploy/pitv.service deploy/pitv-update.service deploy/pitv-update.timer /etc/systemd/system/
-sudo cp deploy/pitv-screen.service /etc/systemd/system/pitv-screen@.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now pitv.service pitv-update.timer
+git clone https://github.com/nizn1770/multimediaDisplay.git ~/pi-tv-display && cd ~/pi-tv-display && ./install.sh   # --dry-run to preview
+sudo reboot
 ```
-   If your user isn't `pi`, edit `User=` and paths in the units.
-   `update.sh` restarts the service with sudo; allow it without a password:
-   `echo 'pi ALL=NOPASSWD: /bin/systemctl restart pitv.service' | sudo tee /etc/sudoers.d/pitv`
-7. **Kiosk autostart** (Bookworm/Wayfire): add to `~/.config/wayfire.ini`
-```ini
-[autostart]
-pitv = /home/pi/pi-tv-display/scripts/kiosk.sh
-```
-   (On labwc, newer Bookworm: add the path to `~/.config/labwc/autostart`. On X11/LXDE: `@/home/pi/pi-tv-display/scripts/kiosk.sh` in `~/.config/lxsession/LXDE-pi/autostart`.) Enable desktop autologin with `sudo raspi-config` → System → Boot/Auto login. Disable screen blanking in raspi-config → Display.
+`install.sh` (idempotent) installs packages, the venv, `config.local.yaml` (from the example), systemd `pitv.service` and `pitv-update.timer`, the sudoers rule, the git hooks, and the kiosk (console autologin → startx → openbox → memory-limited Chromium).
 
 ## Config (`config.local.yaml`, gitignored)
 The repo is public: only `config.example.yaml` (placeholders) is committed. Values in `config.local.yaml` override the example defaults.
@@ -78,14 +66,16 @@ Scopes are read-only (`drive.readonly`, `calendar.readonly`).
 - Repo: `github.com/nizn1770/multimediaDisplay` (branch `main`). If private, use a read-only deploy key (`ssh-keygen -t ed25519`, add pubkey as GitHub Deploy Key, clone via `git@github.com:...`).
 - **SSH:** `ssh pi@pitv.local`, then `cd ~/pi-tv-display`; edit `config.local.yaml`, `sudo systemctl restart pitv`, `journalctl -u pitv -f`.
 
-## Night screen-off
-The UI blacks out during `night.off_at`–`on_at`. To actually power the TV/HDMI down, add timers or cron:
-```
-crontab -e
-0 23 * * *  /home/pi/pi-tv-display/scripts/screen.sh off
-30 6 * * *  /home/pi/pi-tv-display/scripts/screen.sh on
-```
-(`wlr-randr` for HDMI output, `cec-client` for TVs supporting HDMI-CEC.)
+## Screen hours, settings page, CLI
+- Hours are in `config.local.yaml` (`night.on_at` / `night.off_at`, default 06:30 / 23:00 America/Chicago). The server checks them every 30 s and runs `scripts/screen.sh on|off` (HDMI-CEC + xrandr) on each change; there's no cron.
+- `http://pitv.local:8080/settings` (LAN/private IPs only, optional `settings.pin`) edits the hours and sends prev/next/pause/resume/photos/week/month. It validates input, writes `config.local.yaml` atomically and applies immediately.
+- CLI: `./pitv set-hours 06:30 23:00`, `./pitv night on|off`, `./pitv show-config [--reveal]`, `./pitv screen on|off`, `./pitv control <action>`, `./pitv status`. Edits made by hand or with the CLI are picked up within 30 s without a restart.
+- API: `GET/POST /api/settings` (`{on_at, off_at, enabled, pin}`), `POST /api/control` (`{action, pin}`).
+
+## Pi 3B+ performance
+- Photos are EXIF-rotated, downscaled to fit `slideshow.max_width` x `max_height` (default 1920x1080, never upscaled) and re-encoded as JPEG q85 at sync time. Originals never reach the browser. The cache is capped at `drive.max_cache_mb` (default 500); the oldest photos by Drive modified time are dropped first.
+- Chromium runs with one renderer process, no extensions, a 32 MB disk cache, a JS heap cap and a throwaway profile, and restarts if it crashes. The page reloads every 6 h. The CSS uses only opacity transitions (no blur, shadows or filters).
+- Recommended: 256 MB swap, `gpu_mem=128`, the official 5V 2.5A PSU (see docs/PI_SETUP.md).
 
 ## Keeping secrets out of the repo
 - `scripts/install_hooks.sh` installs a pre-commit hook running `scripts/check_secrets.py --staged`.
