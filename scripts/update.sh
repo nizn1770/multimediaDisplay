@@ -1,17 +1,47 @@
 #!/usr/bin/env bash
-# Pull latest from origin; if HEAD changed, reinstall deps and restart. Rolls back on failed health check.
+# Auto-update: fetch origin; if it moved, reset to it, reinstall deps if needed, restart, health-check.
+# Any failure after the reset rolls back to the previous commit (trap) and records the bad SHA in
+# .pitv-bad-commit so it is not redeployed every run; it is retried only once origin moves past it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 BRANCH="${PITV_BRANCH:-main}"
 REMOTE_URL="${PITV_REMOTE_URL:-https://github.com/nizn1770/multimediaDisplay.git}"
+BAD_FILE=.pitv-bad-commit
+RESTART="${PITV_RESTART_CMD:-sudo systemctl restart pitv.service}"
+PY=.venv/bin/python; [ -x "$PY" ] || PY=python3
+PORT="${PITV_PORT:-$(./pitv get server.port 2>/dev/null || echo 8080)}"
+HEALTH_TRIES="${PITV_HEALTH_TRIES:-30}"
+
 git remote get-url origin >/dev/null 2>&1 || git remote add origin "$REMOTE_URL"
 git fetch --quiet origin "$BRANCH"
 OLD=$(git rev-parse HEAD); NEW=$(git rev-parse "origin/$BRANCH")
 [ "$OLD" = "$NEW" ] && { echo "up to date ($OLD)"; exit 0; }
+if [ -f "$BAD_FILE" ] && [ "$(cat "$BAD_FILE")" = "$NEW" ]; then
+  echo "skipping $NEW: failed to deploy earlier (delete $BAD_FILE to retry)"; exit 0
+fi
+
 echo "updating $OLD -> $NEW"
-git reset --hard "$NEW"   # local edits on the Pi are overwritten; config.yaml/secrets/cache are gitignored
+rollback() {
+  local rc=$?
+  trap - ERR EXIT
+  [ "$rc" -eq 0 ] && return 0
+  echo "deploy of $NEW failed (rc=$rc); rolling back to $OLD" >&2
+  echo "$NEW" > "$BAD_FILE"
+  git reset --hard --quiet "$OLD"
+  .venv/bin/pip install -q -r requirements.txt >/dev/null 2>&1 || true
+  $RESTART || true
+  exit "$rc"
+}
+trap rollback EXIT
+git reset --hard --quiet "$NEW"   # tracked files only; config.local.yaml/secrets/cache are gitignored
 if ! git diff --quiet "$OLD" "$NEW" -- requirements.txt; then .venv/bin/pip install -q -r requirements.txt; fi
-sudo systemctl restart pitv.service
-for _ in $(seq 1 20); do curl -fs http://127.0.0.1:8080/healthz >/dev/null && { echo ok; exit 0; }; sleep 1; done
-echo "health check failed; rolling back to $OLD" >&2
-git reset --hard "$OLD"; sudo systemctl restart pitv.service; exit 1
+$RESTART
+ok=0
+for _ in $(seq 1 "$HEALTH_TRIES"); do
+  if curl -fs "http://127.0.0.1:$PORT/healthz" >/dev/null; then ok=1; break; fi
+  sleep 1
+done
+[ "$ok" = 1 ] || { echo "health check failed on port $PORT" >&2; exit 1; }
+rm -f "$BAD_FILE"
+trap - EXIT
+echo "deployed $NEW"

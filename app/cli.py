@@ -3,13 +3,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import yaml
 from app.config import load_config, save_local, validate_hours, local_path
 
-SENSITIVE = ("folder_id", "id", "pin", "service_account_file", "oauth_client_file", "oauth_token_file")
+SENSITIVE = {"folder_id", "id", "calendar_ids", "pin"}
+EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[a-z]{2,}", re.I)
+def _hide(v):
+    v = str(v)
+    if not v or v.startswith("YOUR_"): return v
+    return (v[:3] + "…(hidden)") if len(v) > 6 else "…(hidden)"
 def mask(o, key=None):
+    """Hide IDs, PINs and email-like values (calendar IDs, service-account emails)."""
     if isinstance(o, dict): return {k: mask(v, k) for k, v in o.items()}
     if isinstance(o, list): return [mask(v, key) for v in o]
-    if key in SENSITIVE and isinstance(o, str) and o and not o.startswith("YOUR_") and "/" not in o:
-        return o[:3] + "…(hidden)"
+    if key in SENSITIVE and o not in (None, ""): return _hide(o)
+    if isinstance(o, str) and EMAIL.search(o): return _hide(o)
     return o
+def get_key(c, dotted):
+    for part in dotted.split("."): c = c[part]
+    return c
 def api(path, body=None):
     port = load_config(local_path())["server"]["port"]
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=json.dumps(body).encode() if body is not None else None,
@@ -19,7 +28,8 @@ USAGE = """usage: pitv set-hours ON_AT OFF_AT   e.g. pitv set-hours 06:30 23:00
        pitv night on|off                 enable/disable night screen-off
        pitv show-config [--reveal]       effective config (IDs masked unless --reveal)
        pitv screen on|off                switch the TV now
-       pitv control next|prev|pause|resume|photos|week|month
+       pitv control next|prev|pause|resume|photos|week|month   (export PITV_PIN=... if settings.pin is set)
+       pitv get server.port              print one config value (used by scripts)
        pitv status"""
 def main(a):
     if not a or a[0] in ("-h", "--help", "help"): print(USAGE); return 0
@@ -33,6 +43,9 @@ def main(a):
         save_local({"night": {"enabled": a[1] == "on"}}); print("night screen-off", a[1]); return 0
     if cmd == "show-config":
         c = load_config(local_path()); print(yaml.safe_dump(c if "--reveal" in a else mask(c), sort_keys=False, allow_unicode=True)); return 0
+    if cmd == "get" and len(a) == 2:
+        try: print(get_key(load_config(local_path()), a[1])); return 0
+        except (KeyError, TypeError): print("no such key:", a[1], file=sys.stderr); return 1
     if cmd == "screen" and len(a) == 2 and a[1] in ("on", "off"):
         return subprocess.call([os.path.join(os.path.dirname(__file__), "..", "scripts", "screen.sh"), a[1]])
     if cmd == "control" and len(a) == 2:

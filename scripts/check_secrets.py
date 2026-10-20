@@ -5,14 +5,17 @@ import hashlib, re, subprocess, sys
 # Known real values stored only as SHA-256 so this public repo never contains them.
 BLOCKED_SHA256 = {"e17d2f911deef556864f581eb707feb810bd56a306ab10c08fd69f3136891bde"}
 PATTERNS = {
-    "drive_id": re.compile(r"(?<![A-Za-z0-9_-])1[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])"),
+    # Drive IDs: modern 33/44-char "1..." IDs, legacy "0B..." IDs, shared-drive "0A...9PVA" IDs
+    "drive_id": re.compile(r"(?<![A-Za-z0-9_-])(?:1[A-Za-z0-9_-]{32}|1[A-Za-z0-9_-]{43}|0B[A-Za-z0-9_-]{26,40}|0A[A-Za-z0-9_-]{15,17}Uk9PVA)(?![A-Za-z0-9_-])"),
     "pem_or_key_field": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\"private_" r"key(_id)?\"\s*:"),
     "oauth_secret": re.compile(r"\"client_" r"secret\"\s*:|GOCSPX-[A-Za-z0-9_-]{10,}"),
-    "calendar_id": re.compile(r"[A-Za-z0-9._-]+@group\.calendar\.google\.com"),
+    "calendar_id": re.compile(r"[A-Za-z0-9._%+-]+@(?:group\.calendar\.google\.com|gmail\.com|googlemail\.com|import\.calendar\.google\.com)"),
     "service_account_email": re.compile(r"[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com"),
     "google_api_key": re.compile(r"AIza[0-9A-Za-z_-]{35}"),
 }
-ALLOW = re.compile(r"YOUR_|EXAMPLE|example")
+# Only these exact placeholder values are allowed (no blanket line-based allow-listing).
+ALLOWED_VALUES = {"YOUR_DRIVE_FOLDER_ID", "YOUR_CALENDAR_ID", "YOUR_CALENDAR_ID@group.calendar.google.com",
+                  "you@gmail.com", "your.name@gmail.com"}
 TOKEN = re.compile(r"[A-Za-z0-9_-]{20,64}")
 
 def scan_text(text, where):
@@ -22,8 +25,7 @@ def scan_text(text, where):
             hits.append((where, "blocked_value", tok[:4] + "…"))
     for name, rx in PATTERNS.items():
         for m in rx.finditer(text):
-            line = text[text.rfind("\n", 0, m.start()) + 1: text.find("\n", m.end())]
-            if not ALLOW.search(line):
+            if m.group(0) not in ALLOWED_VALUES:
                 hits.append((where, name, m.group(0)[:6] + "…"))
     return hits
 

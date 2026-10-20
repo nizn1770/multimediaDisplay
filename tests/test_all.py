@@ -277,3 +277,187 @@ def test_long_run_memory_is_bounded(tmp_path):
     growth = sum(st.size_diff for st in tracemalloc.take_snapshot().compare_to(base, "filename"))
     tracemalloc.stop()
     assert growth < 512 * 1024, f"heap grew {growth} bytes over 400 cycles"
+
+# ---- QA iteration-5 regressions ----
+from app.config import calendars
+import json as _json
+
+def test_qa1_legacy_calendar_ids_win(tmp_path):
+    p = tmp_path / "c.yaml"; p.write_text("calendar:\n  calendar_ids: [fam, work]\n")
+    assert [c["id"] for c in calendars(load_config(str(p)))] == ["fam", "work"]
+    p.write_text("calendar:\n  calendars:\n    - id: x\n")
+    assert [c["id"] for c in calendars(load_config(str(p)))] == ["x"]
+
+def test_qa2_huge_jpeg_decoded_with_draft_low_rss(tmp_path):
+    src = tmp_path / "huge.jpg"
+    subprocess.run([sys.executable, "-c", f"from PIL import Image; Image.new('RGB',(8000,6000),(9,99,199)).save(r'{src}',quality=90)"], check=True)
+    code = f"""
+import resource, sys; sys.path.insert(0, r'{ROOT}')
+from app.services import downscale
+from PIL import Image
+before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+downscale(r'{src}', r'{tmp_path / "out.jpg"}')
+print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before, Image.open(r'{tmp_path / "out.jpg"}').size)
+"""
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.split(maxsplit=1)
+    assert int(out[0]) < 60 * 1024, f"RSS grew {int(out[0])//1024} MB"   # full decode would be ~144 MB+
+    assert out[1].strip() == "(1440, 1080)"
+
+def _git(cwd, *a): return subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+
+def _deploy_env(tmp_path, health_ok):
+    """origin bare repo + a 'Pi' clone of this repo's scripts; restart/health are faked."""
+    origin, pi = tmp_path / "origin.git", tmp_path / "pi"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    work = tmp_path / "work"; work.mkdir()
+    _git(work, "init", "-q", "-b", "main"); _git(work, "config", "user.email", "t@t"); _git(work, "config", "user.name", "t")
+    (work / "scripts").mkdir(); shutil.copy(os.path.join(ROOT, "scripts", "update.sh"), work / "scripts")
+    (work / "requirements.txt").write_text(""); (work / "v").write_text("1")
+    (work / "pitv").write_text("#!/bin/sh\necho 1\n"); os.chmod(work / "pitv", 0o755)
+    _git(work, "add", "-A"); _git(work, "commit", "-qm", "v1"); _git(work, "remote", "add", "origin", str(origin)); _git(work, "push", "-q", "origin", "main")
+    subprocess.run(["git", "clone", "-q", str(origin), str(pi)], check=True)
+    (pi / ".venv" / "bin").mkdir(parents=True)
+    pip = pi / ".venv" / "bin" / "pip"; pip.write_text('#!/bin/sh\n[ -f "$PWD/fail_pip" ] && exit 1; exit 0\n'); os.chmod(pip, 0o755)
+    env = {**os.environ, "PITV_RESTART_CMD": "true", "PITV_HEALTH_TRIES": "1", "PITV_PORT": "1" if not health_ok else "0"}
+    return work, pi, env
+
+def _commit(work, name, txt):
+    (work / name).write_text(txt); _git(work, "add", "-A"); _git(work, "commit", "-qm", txt); _git(work, "push", "-q", "origin", "main")
+    return _git(work, "rev-parse", "HEAD")
+
+def _update(pi, env):
+    return subprocess.run(["bash", "scripts/update.sh"], cwd=pi, env=env, capture_output=True, text=True)
+
+def test_qa3_bad_commit_recorded_and_skipped(tmp_path):
+    work, pi, env = _deploy_env(tmp_path, health_ok=False)
+    old = _git(pi, "rev-parse", "HEAD"); bad = _commit(work, "v", "2")
+    r = _update(pi, env); assert r.returncode != 0
+    assert _git(pi, "rev-parse", "HEAD") == old and (pi / ".pitv-bad-commit").read_text().strip() == bad
+    r = _update(pi, env); assert r.returncode == 0 and "skipping" in r.stdout and _git(pi, "rev-parse", "HEAD") == old
+    # origin moves past the bad commit -> retried; with a healthy server it deploys and clears the marker
+    good = _commit(work, "v", "3")
+    env_ok = {**env, "PITV_HEALTH_TRIES": "1"}
+    # fake healthy server via curl shim
+    shim = tmp_path / "bin"; shim.mkdir(); (shim / "curl").write_text("#!/bin/sh\nexit 0\n"); os.chmod(shim / "curl", 0o755)
+    env_ok["PATH"] = f"{shim}:{env['PATH']}"
+    r = _update(pi, env_ok); assert r.returncode == 0, r.stderr
+    assert _git(pi, "rev-parse", "HEAD") == good and not (pi / ".pitv-bad-commit").exists()
+
+def test_qa4_pip_failure_rolls_back(tmp_path):
+    work, pi, env = _deploy_env(tmp_path, health_ok=True)
+    old = _git(pi, "rev-parse", "HEAD"); (pi / "fail_pip").write_text("1")
+    _commit(work, "requirements.txt", "flask\n")
+    r = _update(pi, env); assert r.returncode != 0 and "rolling back" in r.stderr
+    assert _git(pi, "rev-parse", "HEAD") == old
+    r = _update(pi, env); assert "up to date" not in r.stdout   # not silently 'up to date'
+
+def test_qa5_unsupported_and_broken_recorded_as_skipped(tmp_path):
+    d = ImgDrive(tmp_path); d.add("ok.jpg", big)
+    d.add("clip.mov", lambda p: open(p, "wb").write(b"x"))
+    d.add("bad.jpg", lambda p: open(p, "wb").write(b"notanimage"))
+    d.files["clip.mov"] = (d.files["clip.mov"][0], "1")
+    real_list = d.list_images
+    d.list_images = lambda: [dict(f, mimeType="video/quicktime") if f["id"] == "clip.mov" else f for f in real_list()]
+    s = PhotoSync(d, str(tmp_path / "c")); s.sync()
+    assert s.photos() == ["ok.jpg"] and sorted(s.skipped) == ["bad.jpg", "clip.jpg"]
+    calls = []; orig = d.download; d.download = lambda *a: (calls.append(a[0]), orig(*a))
+    s.sync(); assert calls == []                       # skipped files not re-downloaded
+    assert s.last_error is None                        # cleared after a clean sync (qa15)
+
+def test_qa5_heic_supported(tmp_path):
+    pillow_heif = pytest.importorskip("pillow_heif")
+    def heic(dest):
+        Image.new("RGB", (3000, 2000), (1, 2, 3)).save(dest, format="HEIF")
+    d = ImgDrive(tmp_path); d.add("IMG_1.HEIC", heic)
+    d.list_images = (lambda real: lambda: [dict(f, mimeType="image/heic") for f in real()])(d.list_images)
+    s = PhotoSync(d, str(tmp_path / "c")); s.sync()
+    assert s.photos() == ["IMG_1.jpg"] and Image.open(tmp_path / "c" / "IMG_1.jpg").size == (1620, 1080)
+
+def test_qa6_capped_photos_return_when_space_frees(tmp_path):
+    def noise(dest): Image.effect_noise((900, 700), 80).convert("RGB").save(dest, "JPEG")
+    d = ImgDrive(tmp_path)
+    for i in range(6): d.add(f"p{i}.jpg", noise, mod=f"2026-10-0{i+1}")
+    s = PhotoSync(d, str(tmp_path / "c"), max_cache_mb=1); s.sync()
+    before = set(s.photos()); assert "p0.jpg" not in before
+    for n in before: del d.files[n.replace(".jpg", ".jpg")]
+    s.sync(); after = set(s.photos())
+    assert after and not (after & before) and after <= {f"p{i}.jpg" for i in range(6)}  # previously capped ones came back
+
+def test_qa7_malformed_events_skipped_and_reported(tmp_path):
+    ev = [{"id": "nostart", "end": {"date": "2026-10-21"}}, {"id": "noend", "start": {"date": "2026-10-21"}},
+          {"id": "garbage", "start": {"dateTime": "not-a-date"}, "end": {"dateTime": "x"}},
+          {"id": "ok", "start": {"date": "2026-10-20"}, "end": {"date": "2026-10-21"}}]
+    c = CalendarService(FakeCal(ev), ["p"], "America/Chicago"); assert c.refresh(dt.date(2026, 10, 20))
+    assert [e["id"] for e in c.events] == ["ok"] and "3" in c.last_error
+    cfg = load_config("/nonexistent"); cfg["drive"]["cache_dir"] = str(tmp_path)
+    app = create_app(cfg, drive=FakeDrive(FIX), calendar=FakeCal(ev), start_background=False).test_client()
+    assert app.get("/api/events").get_json()["error"]
+
+def test_qa8_scripts_read_port_from_config(tmp_path):
+    for f in ("scripts/update.sh", "scripts/kiosk.sh"):
+        txt = open(os.path.join(ROOT, f)).read()
+        assert "pitv get server.port" in txt and "127.0.0.1:8080" not in txt
+    p = tmp_path / "c.yaml"; p.write_text("server:\n  port: 9123\n")
+    r = subprocess.run([os.path.join(ROOT, "pitv"), "get", "server.port"], env={**os.environ, "PITV_CONFIG": str(p)}, capture_output=True, text=True)
+    assert r.stdout.strip() == "9123"
+
+def test_qa9_screen_sh_cec_first_then_xrandr(tmp_path):
+    shim = tmp_path / "bin"; shim.mkdir(); log = tmp_path / "log"
+    for name in ("cec-client", "xrandr", "timeout"):
+        body = '#!/bin/sh\nshift; exec "$@"\n' if name == "timeout" else f'#!/bin/sh\necho "{name} $* $(cat 2>/dev/null)" >> {log}\n'
+        (shim / name).write_text(body); os.chmod(shim / name, 0o755)
+    env = {**os.environ, "PATH": f"{shim}:/usr/bin:/bin"}
+    subprocess.run(["bash", os.path.join(ROOT, "scripts", "screen.sh"), "off"], env=env, check=True, capture_output=True)
+    lines = log.read_text().splitlines()
+    assert lines[0].startswith("cec-client") and "standby 0" in lines[0]
+    assert any(l.startswith("xrandr --output HDMI-1 --off") for l in lines)
+    log.unlink(); subprocess.run(["bash", os.path.join(ROOT, "scripts", "screen.sh"), "on"], env=env, check=True, capture_output=True)
+    assert "on 0" in log.read_text()
+    assert subprocess.run(["bash", os.path.join(ROOT, "scripts", "screen.sh"), "bogus"], env=env).returncode == 2
+    assert "cec-utils" in open(os.path.join(ROOT, "install.sh")).read()
+
+def test_qa10_mask_hides_all_ids(tmp_path):
+    from app.cli import mask
+    c = {"calendar": {"calendar_ids": ["abc123@" + "group.calendar.google.com"], "calendars": [{"id": "x@" + "gmail.com", "name": "Fam"}]},
+         "settings": {"pin": "0123"}, "drive": {"folder_id": "1" + "Z" * 32}, "misc": "pitv" + "@p.iam.gserviceaccount.com"}
+    out = _json.dumps(mask(c))
+    for secret in ("abc123@", "x@gmail", "0123", "Z" * 10, "pitv@"): assert secret not in out
+    assert "Fam" in out
+
+def test_qa12_install_uses_profile_not_bash_profile():
+    txt = open(os.path.join(ROOT, "install.sh")).read()
+    assert 'PROFILE="$HOME_DIR/.profile"' in txt and 'cat >>"$HOME_DIR/.bash_profile"' not in txt
+
+@pytest.mark.parametrize("text", ["id: 0B" + "x1Y2" * 7, "id: 1" + "a" * 43, "cal: someone" + "@gmail.com",
+                                  "real abc" + "@group.calendar.google.com # example", "example 1" + "Q" * 32])
+def test_qa13_scanner_tightened(text):
+    assert cs.scan_text(text, "x")
+
+def test_qa14_pin_octal_and_non_object_json(tmp_path):
+    p = tmp_path / "c.yaml"; p.write_text("settings:\n  pin: 0123\n")
+    assert load_config(str(p))["settings"]["pin"] == "0123"
+    p.write_text("settings:\n  pin: 4321\n"); assert load_config(str(p))["settings"]["pin"] == "4321"
+    c, _, _, _ = _app(tmp_path, pin="1")
+    for b in ([1, 2], "str", 5):
+        assert c.post("/api/settings", json=b).status_code == 400
+        assert c.post("/api/control", json=b).status_code == 400
+
+def test_qa15_versions_dedupe_naive_tz_mock_dst(tmp_path):
+    c, _, _, _ = _app(tmp_path)
+    p = c.get("/api/photos").get_json(); assert set(p["versions"]) == set(p["photos"]) and all(p["versions"].values())
+    ev = [{"id": "a", "iCalUID": "u1", "start": {"dateTime": "2026-10-21T09:00:00"}, "end": {"dateTime": "2026-10-21T10:00:00"}},
+          {"id": "b", "iCalUID": "u1", "start": {"dateTime": "2026-10-21T09:00:00"}, "end": {"dateTime": "2026-10-21T10:00:00"}},
+          {"id": "lon", "start": {"dateTime": "2026-10-21T09:00:00", "timeZone": "Europe/London"}, "end": {"dateTime": "2026-10-21T10:00:00", "timeZone": "Europe/London"}}]
+    class Two(FakeCal):
+        def list_events(self, cid, *a): return [e for e in self.events if (cid == "c1") == (e["id"] != "b")]
+    s = CalendarService(Two(ev), ["c1", "c2"], "America/Chicago"); s.refresh(dt.date(2026, 10, 20))
+    by = {e["id"]: e for e in s.events}
+    assert "b" not in by                                         # dupe across calendars removed
+    assert by["a"]["start"].startswith("2026-10-21T09:00:00-05:00")  # naive -> configured tz (CDT)
+    assert by["lon"]["start"].startswith("2026-10-21T03:00:00-05:00")  # naive + event timeZone
+    from app.clients import MockCalendar
+    mc = MockCalendar(tz="America/Chicago")
+    offs = {e["start"]["dateTime"][-6:] for e in mc.list_events("p", None, None) if "dateTime" in e["start"] and e["id"] != "e6"}
+    want = dt.datetime.now(ZoneInfo("America/Chicago")).strftime("%z"); want = want[:3] + ":" + want[3:]
+    assert offs <= {"-05:00", "-06:00"} and offs   # real DST-aware offsets, not hard-coded
+    assert "/config.local.yaml" in open(os.path.join(ROOT, "deploy", "pitv.service")).read()

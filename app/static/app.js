@@ -5,7 +5,7 @@ const wx=c=>WX[c]||WX[Math.floor(c/10)*10]||'';
 const ago=t=>{if(!t)return 'never';const m=Math.round((Date.now()/1000-t)/60);return m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago'};
 const $=id=>document.getElementById(id);
 async function j(u){const r=await fetch(u);if(!r.ok)throw new Error(u+' '+r.status);return r.json()}
-async function loadPhotos(){try{const d=await j('/api/photos');S.photos=d.photos;S.interval=d.interval;S.psync=d.last_sync;S.perr=d.error;showSync()}catch(e){}}
+async function loadPhotos(){try{const d=await j('/api/photos');S.photos=d.photos;S.ver=d.versions||{};S.interval=d.interval;S.psync=d.last_sync;S.perr=d.error;showSync()}catch(e){}}
 async function loadEvents(){try{const d=await j('/api/events');S.events=d.events;S.byDay=d.by_day;S.today=d.today;S.csync=d.last_fetch;S.cerr=d.error;showSync();renderAgenda(d.agenda||[]);$('err').textContent=[d.error&&'Calendar offline (cached)',S.perr&&'Photos offline (cached)'].filter(Boolean).join(' · ')}catch(e){$('err').textContent='Server unreachable'}}
 async function loadStatus(){try{const d=await j('/api/status');handleControl(d.control);S.tz=d.timezone;$('night').classList.toggle('hidden',!d.night);
  const w=d.weather;$('weather').textContent=w?`${wx(w.code)} ${Math.round(w.temp)}° ${w.location||''}`:'';
@@ -17,7 +17,7 @@ let cur='imgA';
 function nextPhoto(){if(!S.photos.length)return;S.idx=(S.idx+1)%S.photos.length;
  const nxt=cur==='imgA'?'imgB':'imgA',img=$(nxt);
  img.onload=()=>{$(nxt).classList.add('show');$(cur).classList.remove('show');cur=nxt};
- img.onerror=()=>{};img.src='/photos/'+encodeURIComponent(S.photos[S.idx]);}
+ img.onerror=()=>{};const n=S.photos[S.idx];img.src='/photos/'+encodeURIComponent(n)+'?v='+(S.ver[n]||'');}
 function iso(d){return d.toISOString().slice(0,10)}
 function D(s){const [y,m,dd]=s.split('-').map(Number);return new Date(Date.UTC(y,m-1,dd))}
 function render(mode){const t=D(S.today||iso(new Date()));let start,n,cols=7;

@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Launch Chromium fullscreen once the server is healthy. Flags tuned for a 1 GB Pi 3B+.
-until curl -fs http://127.0.0.1:8080/healthz >/dev/null; do sleep 2; done
-B=$(command -v chromium-browser || command -v chromium)
-PROFILE=/tmp/pitv-chromium   # fresh profile each boot (tmpfs-friendly, no growth)
+cd "$(dirname "$0")/.." || exit 1
+PORT="${PITV_PORT:-$(./pitv get server.port 2>/dev/null || echo 8080)}"
+URL="http://127.0.0.1:$PORT/"
+until curl -fs "${URL}healthz" >/dev/null; do sleep 2; done
+B=$(command -v chromium || command -v chromium-browser)
+PROFILE=/tmp/pitv-chromium   # fresh profile each boot (no growth)
 rm -rf "$PROFILE"
 while true; do   # relaunch if the browser ever crashes / gets OOM-killed
   "$B" --kiosk --noerrdialogs --disable-infobars --no-first-run --incognito \
@@ -13,6 +16,6 @@ while true; do   # relaunch if the browser ever crashes / gets OOM-killed
     --disable-sync --disable-default-apps --disable-session-crashed-bubble \
     --check-for-update-interval=31536000 --password-store=basic \
     --js-flags=--max-old-space-size=128 --enable-low-end-device-mode \
-    http://127.0.0.1:8080/
+    "$URL"
   sleep 5
 done

@@ -2,7 +2,7 @@
 with the same methods into PhotoSync / CalendarService / create_app."""
 import datetime as dt, io, json, os, shutil
 FIX = os.path.join(os.path.dirname(__file__), "..", "fixtures")
-IMAGE_MIMES = ("image/jpeg", "image/png", "image/gif", "image/webp")
+
 
 class MockDrive:
     """list_images() -> [{id,name,mimeType,modifiedTime}]; download(id, dest_path)."""
@@ -12,8 +12,8 @@ class MockDrive:
         out = []
         for n in sorted(os.listdir(self.folder)):
             p = os.path.join(self.folder, n)
-            if n.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
-                out.append({"id": n, "name": n, "mimeType": "image/jpeg",
+            if not n.startswith(".") and os.path.isfile(p):
+                out.append({"id": n, "name": n, "mimeType": "",  # resolved from extension
                             "modifiedTime": str(os.path.getmtime(p))})
         return out
     def download(self, file_id, dest):
@@ -21,8 +21,9 @@ class MockDrive:
 
 class MockCalendar:
     """list_events(cal_id, time_min, time_max) -> Google-shaped event dicts."""
-    def __init__(self, path=os.path.join(FIX, "events.json")):
-        self.path = path
+    def __init__(self, path=os.path.join(FIX, "events.json"), tz="America/Chicago"):
+        from zoneinfo import ZoneInfo
+        self.path, self.tz = path, ZoneInfo(tz)
     def list_events(self, cal_id, time_min, time_max):
         today = dt.date.today()
         evs = json.load(open(self.path))
@@ -34,12 +35,11 @@ class MockCalendar:
                             "start": {"date": d.isoformat()},
                             "end": {"date": (d + dt.timedelta(days=e["all_day_days"])).isoformat()}})
             else:
-                s = dt.datetime.combine(d, dt.time.fromisoformat(e["start"]))
+                tz = dt.timezone.utc if e.get("utc") else self.tz   # DST-aware local time
+                s = dt.datetime.combine(d, dt.time.fromisoformat(e["start"]), tz)
                 en = s + dt.timedelta(minutes=e["minutes"])
-                tz = e.get("tz_offset", "-05:00")
-                out.append({"id": e["id"], "summary": e["summary"],
-                            "start": {"dateTime": s.isoformat() + tz},
-                            "end": {"dateTime": en.isoformat() + tz}})
+                out.append({"id": e["id"], "iCalUID": e["id"] + "@mock", "summary": e["summary"],
+                            "start": {"dateTime": s.isoformat()}, "end": {"dateTime": en.isoformat()}})
         return out
 
 def _creds(cfg, scopes):
@@ -99,5 +99,5 @@ class GoogleCalendar:
 
 def make_clients(cfg):
     if cfg["mock"]:
-        return MockDrive(), MockCalendar()
+        return MockDrive(), MockCalendar(tz=cfg.get("timezone", "America/Chicago"))
     return GoogleDrive(cfg), GoogleCalendar(cfg)

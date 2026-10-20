@@ -5,7 +5,7 @@ Wants=network-online.target
 [Service]
 User=pi
 WorkingDirectory=/home/pi/pi-tv-display
-Environment=PITV_CONFIG=/home/pi/pi-tv-display/config.yaml
+Environment=PITV_CONFIG=/home/pi/pi-tv-display/config.local.yaml
 ExecStart=/home/pi/pi-tv-display/.venv/bin/python -m app.server
 Restart=always
 RestartSec=5

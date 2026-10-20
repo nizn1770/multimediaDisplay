@@ -75,7 +75,8 @@ def create_app(cfg=None, drive=None, calendar=None, start_background=True, weath
         return send_from_directory(os.path.abspath(photos.cache), name, max_age=86400)
     @app.get("/api/photos")
     def api_photos():
-        return jsonify(photos=photos.photos(), interval=cfg["slideshow"]["seconds_per_photo"],
+        names = photos.photos()
+        return jsonify(photos=names, versions={n: photos.version(n) for n in names}, skipped=len(photos.skipped), interval=cfg["slideshow"]["seconds_per_photo"],
                        last_sync=photos.last_sync, error=photos.last_error)
     @app.get("/api/events")
     def api_events():
@@ -96,6 +97,11 @@ def create_app(cfg=None, drive=None, calendar=None, start_background=True, weath
         return jsonify(now=now.isoformat(), timezone=cfg["timezone"], night=night, weather=w, mock=cfg["mock"],
                        control=control, hours={"on_at": n["on_at"], "off_at": n["off_at"], "enabled": n["enabled"]})
 
+    def body():
+        b = request.get_json(silent=True)
+        if b is None: b = {}
+        if not isinstance(b, dict): abort(400, description="JSON body must be an object")
+        return b
     def lan_only():
         try:
             ip = ipaddress.ip_address(request.remote_addr or "")
@@ -105,7 +111,7 @@ def create_app(cfg=None, drive=None, calendar=None, start_background=True, weath
             abort(403)
         pin = str(cfg.get("settings", {}).get("pin") or "")
         if pin and request.method == "POST":
-            given = (request.get_json(silent=True) or {}).get("pin") or request.headers.get("X-PIN", "")
+            given = body().get("pin") or request.headers.get("X-PIN", "")
             if str(given) != pin:
                 abort(401)
     @app.get("/settings")
@@ -118,7 +124,7 @@ def create_app(cfg=None, drive=None, calendar=None, start_background=True, weath
                        pin_required=bool(cfg.get("settings", {}).get("pin")), control=control)
     @app.post("/api/settings")
     def post_settings():
-        lan_only(); b = request.get_json(silent=True) or {}
+        lan_only(); b = body()
         on_at, off_at = b.get("on_at", cfg["night"]["on_at"]), b.get("off_at", cfg["night"]["off_at"])
         enabled = b.get("enabled", cfg["night"]["enabled"])
         try:
@@ -133,11 +139,13 @@ def create_app(cfg=None, drive=None, calendar=None, start_background=True, weath
     ACTIONS = {"next", "prev", "pause", "resume", "photos", "week", "month"}
     @app.post("/api/control")
     def post_control():
-        lan_only(); a = (request.get_json(silent=True) or {}).get("action")
+        lan_only(); a = body().get("action")
         if a not in ACTIONS: return jsonify(error=f"action must be one of {sorted(ACTIONS)}"), 400
         if a in ("pause", "resume"): control["paused"] = a == "pause"
         control["seq"] += 1; control["action"] = a
         return jsonify(ok=True, control=control)
+    @app.errorhandler(400)
+    def bad_request(e): return jsonify(error=getattr(e, "description", "bad request")), 400
     @app.get("/healthz")
     def health(): return "ok"
     return app
