@@ -17,6 +17,7 @@ tests/            pytest suite
 ## Quick start (no Google account – mock mode)
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
+scripts/install_hooks.sh
 PITV_MOCK=1 .venv/bin/python -m app.server     # open http://127.0.0.1:8080
 .venv/bin/python -m pytest -q
 ```
@@ -27,7 +28,7 @@ Mock is also the default in `config.example.yaml` (`mock: true`).
 2. `sudo apt update && sudo apt install -y git python3-venv chromium-browser curl wlr-randr cec-utils`
 3. `git clone https://github.com/nizn1770/multimediaDisplay.git ~/pi-tv-display && cd ~/pi-tv-display`
 4. `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
-5. `cp config.example.yaml config.yaml` and edit (see Config). Put credentials in `secrets/` (gitignored).
+5. `cp config.example.yaml config.local.yaml` and edit it (see Config). `config.local.yaml` and `secrets/` are gitignored — real IDs/keys live only there.
 6. Install services:
 ```bash
 sudo cp deploy/pitv.service deploy/pitv-update.service deploy/pitv-update.timer /etc/systemd/system/
@@ -45,25 +46,26 @@ pitv = /home/pi/pi-tv-display/scripts/kiosk.sh
 ```
    (On labwc, newer Bookworm: add the path to `~/.config/labwc/autostart`. On X11/LXDE: `@/home/pi/pi-tv-display/scripts/kiosk.sh` in `~/.config/lxsession/LXDE-pi/autostart`.) Enable desktop autologin with `sudo raspi-config` → System → Boot/Auto login. Disable screen blanking in raspi-config → Display.
 
-## Config (`config.yaml`)
+## Config (`config.local.yaml`, gitignored)
+The repo is public: only `config.example.yaml` (placeholders) is committed. Values in `config.local.yaml` override the example defaults.
+
 | key | meaning |
 |---|---|
 | `mock` | `true` uses fixtures; set `false` for real Google |
 | `timezone` | IANA tz used for calendar days, clock, night schedule |
 | `drive.folder_id` | ID from the folder URL `drive.google.com/drive/folders/<ID>` |
 | `drive.sync_interval_sec` | how often new/removed photos are synced (default 300) |
-| `calendar.calendar_ids` | list; `primary` (OAuth only) or the calendar ID from Calendar settings → "Integrate calendar" |
+| `calendar.calendars` | list of `{id, name, color}`; color-codes events. ID from Calendar settings → "Integrate calendar" |
 | `credentials.type` | `service_account` (recommended) or `oauth` |
-| `slideshow.seconds_per_photo`, `weather.*` (Open-Meteo, no key), `night.off_at/on_at`, `server.*` | |
+| `weather.*` | Open-Meteo, no key. Default Minneapolis, MN (44.9778, -93.2650), `forecast_days: 3` |
+| `night.off_at/on_at` | default 23:00 / 06:30 in `timezone` (America/Chicago) |
+| `device.user/hostname` | default `pi` / `pitv` (docs; systemd units assume `/home/pi`) |
+| `slideshow.seconds_per_photo`, `server.*` | |
 
-Env overrides: `PITV_CONFIG=/path/config.yaml`, `PITV_MOCK=1|0`.
+Env overrides: `PITV_CONFIG=/path/to/config.local.yaml`, `PITV_MOCK=1|0`.
 
 ## Google credentials
-**Service account (recommended)**
-1. console.cloud.google.com → create project → enable **Google Drive API** and **Google Calendar API**.
-2. IAM & Admin → Service Accounts → create → Keys → Add key → JSON. Save as `secrets/service-account.json`.
-3. Share the Drive photo folder with the service-account email (Viewer).
-4. Google Calendar → calendar settings → "Share with specific people" → add the service-account email ("See all event details"). Use the calendar's ID (not `primary`).
+**Service account (recommended)** — full step-by-step in [`docs/SERVICE_ACCOUNT_SETUP.txt`](docs/SERVICE_ACCOUNT_SETUP.txt). Summary: create GCP project → enable Drive + Calendar APIs → create service account → download JSON key → `scp` to `/home/pi/pi-tv-display/secrets/service-account.json` and `chmod 600` → share the Drive folder and each calendar with the service-account email (Viewer / "See all event details") → copy Calendar ID from "Integrate calendar" → put IDs in `config.local.yaml`, `mock: false`, restart.
 
 **OAuth (alternative, uses your own account)**
 1. Same project; OAuth consent screen (External, add yourself as test user; publish to avoid 7-day token expiry); Credentials → OAuth client ID → *Desktop app*; save JSON as `secrets/oauth-client.json`.
@@ -85,8 +87,14 @@ crontab -e
 ```
 (`wlr-randr` for HDMI output, `cec-client` for TVs supporting HDMI-CEC.)
 
+## Keeping secrets out of the repo
+- `scripts/install_hooks.sh` installs a pre-commit hook running `scripts/check_secrets.py --staged`.
+- `python3 scripts/check_secrets.py --history` scans all tracked files and full git history (also run by pytest).
+- It flags Drive-ID-like strings, private keys, client secrets, `@group.calendar.google.com` IDs, service-account emails, API keys, and specific known real IDs (stored only as SHA-256 hashes). Lines containing `YOUR_`/`example` are allowed placeholders.
+
 ## Behaviour notes
 - Photo sync: downloads only new/changed files (manifest by `modifiedTime`), writes atomically, prunes deleted ones; if Drive is unreachable the existing cache keeps showing.
+- UI extras: 3-day forecast, today's agenda strip (next 3 events), "last synced" indicator, per-calendar colors.
 - Calendar: fetches previous week through ~7 weeks; all-day end dates are exclusive; timed events are converted to `timezone` and span every day they touch; cancelled events ignored; last good data kept when offline (UI shows "Calendar offline (cached)").
 
 ## Testing / injecting clients

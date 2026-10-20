@@ -60,7 +60,10 @@ def _parse(t, tz):
 class CalendarService:
     """Fetches events for a window, normalises to local tz. Keeps last good data on error."""
     def __init__(self, cal, calendar_ids, tzname):
-        self.cal, self.ids, self.tz = cal, calendar_ids, ZoneInfo(tzname)
+        self.cal, self.tz = cal, ZoneInfo(tzname)
+        self.cals = [c if isinstance(c, dict) else {"id": c, "name": c, "color": "#4a90e2"} for c in calendar_ids]
+        self.ids = [c["id"] for c in self.cals]
+        self.color = {c["id"]: c["color"] for c in self.cals}
         self.events, self.last_error, self.last_fetch = [], None, None
     def refresh(self, today=None):
         today = today or dt.datetime.now(self.tz).date()
@@ -77,7 +80,7 @@ class CalendarService:
             if e.get("status") == "cancelled": continue
             s, allday = _parse(e["start"], self.tz)
             en, _ = _parse(e["end"], self.tz)
-            evs.append({"id": e.get("id"), "calendar": cid, "title": e.get("summary", "(no title)"),
+            evs.append({"id": e.get("id"), "calendar": cid, "color": self.color.get(cid), "title": e.get("summary", "(no title)"),
                         "all_day": allday, "start": s.isoformat(), "end": en.isoformat()})
         evs.sort(key=lambda x: (x["start"][:10], not x["all_day"], x["start"]))
         self.events, self.last_error, self.last_fetch = evs, None, time.time()
@@ -95,6 +98,16 @@ class CalendarService:
         while d <= max(s, e):
             days.append(d.isoformat()); d += dt.timedelta(days=1)
         return days
+    def agenda(self, now=None, n=3):
+        """Next n events that haven't ended (all-day events count for their whole day)."""
+        now = now or dt.datetime.now(self.tz)
+        out = []
+        for ev in self.events:
+            end = (dt.datetime.combine(dt.date.fromisoformat(ev["end"]), dt.time(), self.tz) if ev["all_day"]
+                   else dt.datetime.fromisoformat(ev["end"]))
+            if end > now: out.append(ev)
+        out.sort(key=lambda e: e["start"] if not e["all_day"] else e["start"] + "T00:00:00")
+        return out[:n]
     def by_day(self):
         out = {}
         for ev in self.events:

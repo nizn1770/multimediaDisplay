@@ -78,3 +78,48 @@ def test_app_error_surface(tmp_path):
     assert app.get("/api/photos").get_json()["error"]
     assert app.get("/api/events").get_json()["error"]
     assert app.get("/api/status").status_code == 200
+
+import subprocess, sys, importlib.util
+ROOT = os.path.join(os.path.dirname(__file__), "..")
+spec = importlib.util.spec_from_file_location("cs", os.path.join(ROOT, "scripts", "check_secrets.py"))
+cs = importlib.util.module_from_spec(spec); spec.loader.exec_module(cs)
+
+def test_tracked_files_and_history_have_no_secrets():
+    r = subprocess.run([sys.executable, "scripts/check_secrets.py", "--history"], cwd=ROOT, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout
+
+def test_local_config_is_gitignored():
+    r = subprocess.run(["git", "check-ignore", "config.local.yaml", "secrets/service-account.json"], cwd=ROOT, capture_output=True, text=True)
+    assert r.returncode == 0 and len(r.stdout.split()) == 2
+
+@pytest.mark.parametrize("text", [
+    "pFWqeuwO0JkCeLLlCR342KGeSKXNhthe1"[::-1],                 # the real folder id (built, never literal)
+    "folder_id: 1" + "A" * 32,
+    '{"private_' 'key": "-----BEGIN " "PRIVATE KEY-----"}',
+    '{"client_' 'secret": "abc"}',
+    "abc123" + "@group.calendar.google.com",
+    "pitv" + "@proj-1.iam.gserviceaccount.com"])
+def test_scanner_detects(text):
+    assert cs.scan_text(text, "x")
+
+def test_scanner_allows_placeholders():
+    assert not cs.scan_text('folder_id: "YOUR_DRIVE_FOLDER_ID"\nid: "YOUR_CALENDAR_ID"', "x")
+
+def test_agenda_and_colors():
+    now = dt.datetime(2026, 10, 20, 12, tzinfo=__import__("zoneinfo").ZoneInfo("America/Chicago"))
+    ev = [{"id": "past", "start": {"dateTime": "2026-10-20T08:00:00-05:00"}, "end": {"dateTime": "2026-10-20T09:00:00-05:00"}},
+          {"id": "allday", "start": {"date": "2026-10-20"}, "end": {"date": "2026-10-21"}},
+          {"id": "soon", "start": {"dateTime": "2026-10-20T15:00:00-05:00"}, "end": {"dateTime": "2026-10-20T16:00:00-05:00"}},
+          {"id": "later", "start": {"dateTime": "2026-10-22T15:00:00-05:00"}, "end": {"dateTime": "2026-10-22T16:00:00-05:00"}},
+          {"id": "last", "start": {"dateTime": "2026-10-23T15:00:00-05:00"}, "end": {"dateTime": "2026-10-23T16:00:00-05:00"}}]
+    c = CalendarService(FakeCal(ev), [{"id": "fam", "name": "Family", "color": "#123456"}], "America/Chicago")
+    c.refresh(dt.date(2026, 10, 20))
+    assert [e["id"] for e in c.agenda(now)] == ["allday", "soon", "later"]
+    assert all(e["color"] == "#123456" for e in c.events)
+
+def test_status_forecast_and_defaults(tmp_path):
+    cfg = load_config("/nonexistent"); cfg["mock"] = True; cfg["drive"]["cache_dir"] = str(tmp_path)
+    assert cfg["weather"]["latitude"] == 44.9778 and cfg["night"]["off_at"] == "23:00" and cfg["device"]["hostname"] == "pitv"
+    app = create_app(cfg, start_background=False).test_client()
+    w = app.get("/api/status").get_json()["weather"]; assert len(w["forecast"]) == 3
+    e = app.get("/api/events").get_json(); assert "agenda" in e and e["calendars"][0]["color"]

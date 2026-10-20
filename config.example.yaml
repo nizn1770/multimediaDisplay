@@ -1,24 +1,34 @@
+# Copy to config.local.yaml (gitignored) and fill in real values there. NEVER commit IDs/keys.
 mock: true                      # true = fixtures, no Google accounts needed
 timezone: America/Chicago
+device:
+  user: pi
+  hostname: pitv
 drive:
   folder_id: "YOUR_DRIVE_FOLDER_ID"
   sync_interval_sec: 300
   cache_dir: ./cache/photos
 calendar:
-  calendar_ids: ["primary"]
+  # One or more calendars; color is used in the UI.
+  calendars:
+    - id: "YOUR_CALENDAR_ID"
+      name: Family
+      color: "#4a90e2"
   refresh_interval_sec: 600
 credentials:
   type: service_account          # or "oauth"
-  service_account_file: ./secrets/service-account.json
+  service_account_file: /home/pi/pi-tv-display/secrets/service-account.json
   oauth_client_file: ./secrets/oauth-client.json
   oauth_token_file: ./secrets/token.json
 slideshow:
   seconds_per_photo: 15
 weather:
   enabled: true
-  latitude: 41.88
-  longitude: -87.63
+  location_name: Minneapolis, MN
+  latitude: 44.9778
+  longitude: -93.2650
   units: fahrenheit
+  forecast_days: 3
 night:
   enabled: true
   off_at: "23:00"

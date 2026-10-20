@@ -10,3 +10,6 @@ html,body{margin:0;height:100%;background:#000;color:#fff;font-family:sans-serif
 #hud{position:absolute;right:2vw;bottom:2vh;text-align:right;text-shadow:0 0 8px #000}
 #clock{font-size:8vh}#date,#weather{font-size:3vh}#err{color:#f88;font-size:1.6vh}
 #night{position:absolute;inset:0;background:#000;z-index:10}
+#forecast{font-size:2.2vh;display:flex;gap:1.5vw;justify-content:flex-end}
+#agenda{font-size:2.2vh;margin-top:1vh}#agenda div{border-left:4px solid #4af;padding-left:6px;margin:2px 0}
+#sync{font-size:1.4vh;opacity:.6}

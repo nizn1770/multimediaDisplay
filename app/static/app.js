@@ -1,11 +1,15 @@
 // Rotation: slideshow -> week -> slideshow -> month ...
 const S={photos:[],idx:0,interval:15,events:[],byDay:{},today:null,tz:null,phase:0};
+const WX={0:'☀',1:'🌤',2:'⛅',3:'☁',45:'🌫',48:'🌫',51:'🌦',61:'🌧',63:'🌧',65:'🌧',71:'🌨',73:'🌨',75:'❄',80:'🌦',95:'⛈'};
+const wx=c=>WX[c]||WX[Math.floor(c/10)*10]||'';
+const ago=t=>{if(!t)return 'never';const m=Math.round((Date.now()/1000-t)/60);return m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago'};
 const $=id=>document.getElementById(id);
 async function j(u){const r=await fetch(u);if(!r.ok)throw new Error(u+' '+r.status);return r.json()}
-async function loadPhotos(){try{const d=await j('/api/photos');S.photos=d.photos;S.interval=d.interval;}catch(e){}}
-async function loadEvents(){try{const d=await j('/api/events');S.events=d.events;S.byDay=d.by_day;S.today=d.today;$('err').textContent=d.error?'Calendar offline (cached)':''}catch(e){$('err').textContent='Server unreachable'}}
+async function loadPhotos(){try{const d=await j('/api/photos');S.photos=d.photos;S.interval=d.interval;S.psync=d.last_sync;S.perr=d.error;showSync()}catch(e){}}
+async function loadEvents(){try{const d=await j('/api/events');S.events=d.events;S.byDay=d.by_day;S.today=d.today;S.csync=d.last_fetch;S.cerr=d.error;showSync();renderAgenda(d.agenda||[]);$('err').textContent=[d.error&&'Calendar offline (cached)',S.perr&&'Photos offline (cached)'].filter(Boolean).join(' · ')}catch(e){$('err').textContent='Server unreachable'}}
 async function loadStatus(){try{const d=await j('/api/status');S.tz=d.timezone;$('night').classList.toggle('hidden',!d.night);
- const w=d.weather;$('weather').textContent=w?`${Math.round(w.temp)}° (H ${Math.round(w.high)} / L ${Math.round(w.low)})`:'';}catch(e){}}
+ const w=d.weather;$('weather').textContent=w?`${wx(w.code)} ${Math.round(w.temp)}° ${w.location||''}`:'';
+ $('forecast').innerHTML=w&&w.forecast?w.forecast.map(f=>`<span>${D(f.date).toLocaleDateString([], {weekday:'short',timeZone:'UTC'})} ${wx(f.code)} ${Math.round(f.high)}°/${Math.round(f.low)}°</span>`).join(''):'';}catch(e){}}
 function tick(){const n=new Date(),o={timeZone:S.tz||undefined};
  $('clock').textContent=n.toLocaleTimeString([], {...o,hour:'numeric',minute:'2-digit'});
  $('date').textContent=n.toLocaleDateString([], {...o,weekday:'long',month:'long',day:'numeric'});}
@@ -26,7 +30,7 @@ function render(mode){const t=D(S.today||iso(new Date()));let start,n,cols=7;
   const c=document.createElement('div');c.className='day'+(k===S.today?' today':'')+(mode==='month'&&d.getUTCMonth()!==t.getUTCMonth()?' other':'');
   c.innerHTML=`<b>${d.toLocaleDateString([], {weekday:'short',day:'numeric',timeZone:'UTC'})}</b>`;
   for(const e of S.events.filter(e=>(S.byDay[k]||[]).includes(e.id))){const x=document.createElement('div');
-   x.className='ev'+(e.all_day?' allday':'');
+   x.className='ev'+(e.all_day?' allday':'');if(e.color)x.style.background=e.color;
    x.textContent=(e.all_day?'':new Date(e.start).toLocaleTimeString([], {hour:'numeric',minute:'2-digit',timeZone:S.tz||undefined})+' ')+e.title;c.appendChild(x)}
   g.appendChild(c)}}
 let photoCount=0;
@@ -37,3 +41,11 @@ function step(){ // ~8 photos then a calendar view for 30s
  setInterval(loadPhotos,60000);setInterval(loadEvents,120000);setInterval(loadStatus,60000);
  setTimeout(()=>location.reload(),6*3600*1000); // memory hygiene for long runs
  S.idx=-1;step();})();
+
+function showSync(){$('sync').textContent=`Photos synced ${ago(S.psync)} · Calendar ${ago(S.csync)}`}
+setInterval(showSync,30000);
+function renderAgenda(a){const el=$('agenda');el.innerHTML='';for(const e of a){const x=document.createElement('div');
+ if(e.color)x.style.borderColor=e.color;
+ const when=e.all_day?D(e.start).toLocaleDateString([], {weekday:'short',timeZone:'UTC'})+' all day'
+  :new Date(e.start).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit',timeZone:S.tz||undefined});
+ x.textContent=when+' — '+e.title;el.appendChild(x)}}

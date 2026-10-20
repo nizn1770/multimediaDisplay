@@ -1,7 +1,7 @@
 import datetime as dt, logging, os, time
 from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, send_from_directory, abort
-from .config import load_config
+from .config import load_config, calendars
 from .clients import make_clients
 from .services import PhotoSync, CalendarService, Background, in_night
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -13,19 +13,27 @@ def create_app(cfg=None, drive=None, calendar=None, start_background=True, weath
         d, c = make_clients(cfg); drive = drive or d; calendar = calendar or c
     tz = ZoneInfo(cfg["timezone"])
     photos = PhotoSync(drive, cfg["drive"]["cache_dir"])
-    cal = CalendarService(calendar, cfg["calendar"]["calendar_ids"], cfg["timezone"])
+    cal = CalendarService(calendar, calendars(cfg), cfg["timezone"])
     weather = {"data": None, "ts": 0}
+    w_cfg = cfg["weather"]
     def fetch_weather():
         if weather_fn: return weather_fn()
-        if cfg["mock"]: return {"temp": 68, "code": 1, "high": 74, "low": 55}
+        if cfg["mock"]:
+            t = dt.date.today()
+            return {"temp": 48, "code": 2, "high": 54, "low": 39, "location": w_cfg.get("location_name"),
+                    "forecast": [{"date": (t + dt.timedelta(days=i)).isoformat(), "high": 54 - i * 3, "low": 39 - i * 2,
+                                  "code": [2, 61, 3][i % 3]} for i in range(w_cfg.get("forecast_days", 3))]}
         import requests
         w = cfg["weather"]
         r = requests.get("https://api.open-meteo.com/v1/forecast", timeout=10, params={
             "latitude": w["latitude"], "longitude": w["longitude"], "current_weather": "true",
-            "daily": "temperature_2m_max,temperature_2m_min", "temperature_unit": w["units"],
+            "daily": "temperature_2m_max,temperature_2m_min,weathercode", "forecast_days": w.get("forecast_days", 3), "temperature_unit": w["units"],
             "timezone": cfg["timezone"]}).json()
         return {"temp": r["current_weather"]["temperature"], "code": r["current_weather"]["weathercode"],
-                "high": r["daily"]["temperature_2m_max"][0], "low": r["daily"]["temperature_2m_min"][0]}
+                "high": r["daily"]["temperature_2m_max"][0], "low": r["daily"]["temperature_2m_min"][0],
+                "location": w.get("location_name"),
+                "forecast": [{"date": d, "high": hi, "low": lo, "code": c} for d, hi, lo, c in zip(
+                    r["daily"]["time"], r["daily"]["temperature_2m_max"], r["daily"]["temperature_2m_min"], r["daily"]["weathercode"])]}
     app = Flask(__name__, static_folder=None)
     app.config.update(PITV=cfg, photos=photos, cal=cal)
     if start_background:
@@ -50,7 +58,8 @@ def create_app(cfg=None, drive=None, calendar=None, start_background=True, weath
     @app.get("/api/events")
     def api_events():
         return jsonify(events=cal.events, by_day={k: [e["id"] for e in v] for k, v in cal.by_day().items()},
-                       today=dt.datetime.now(tz).date().isoformat(), last_fetch=cal.last_fetch, error=cal.last_error)
+                       today=dt.datetime.now(tz).date().isoformat(), agenda=cal.agenda(),
+                       calendars=cal.cals, last_fetch=cal.last_fetch, error=cal.last_error)
     @app.get("/api/status")
     def api_status():
         now = dt.datetime.now(tz); n = cfg["night"]
