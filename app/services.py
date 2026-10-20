@@ -20,7 +20,7 @@ class OversizedImage(Exception):
 
 # Peak-RAM budgets per decoder (pixels). Baseline JPEGs use DCT-domain scaling (draft) so any size is
 # cheap; progressive JPEGs buffer all coefficients (~3 bytes/px) and HEIC/PNG decode at full size.
-DECODE_LIMITS = {"jpeg_baseline": 150_000_000, "jpeg_progressive": 12_500_000, "heif": 12_500_000, "other": 16_000_000}
+DECODE_LIMITS = {"animated": 4_000_000, "jpeg_baseline": 150_000_000, "jpeg_progressive": 12_500_000, "heif": 12_500_000, "other": 16_000_000}
 HARD_MAX_PIXELS = 160_000_000
 
 def _set_pil_limits():
@@ -30,6 +30,8 @@ def _set_pil_limits():
         pillow_heif.options.DECODE_THREADS = 1   # fewer parallel buffers on a 4-core/1 GB Pi
 
 def decode_class(im):
+    if getattr(im, "is_animated", False) or getattr(im, "n_frames", 1) > 1:
+        return "animated"   # animated WebP/GIF decoders buffer more; only frame 0 is shown
     if im.format == "JPEG":
         return "jpeg_progressive" if (im.info.get("progressive") or im.info.get("progression")) else "jpeg_baseline"
     if im.format in ("HEIF", "HEIC", "AVIF"):
@@ -42,8 +44,14 @@ def downscale(src, dest, max_w=1920, max_h=1080, quality=85, limits=None):
     raise OversizedImage *before* decoding. Baseline JPEGs decode at reduced scale via draft()."""
     from PIL import Image, ImageOps
     _set_pil_limits(); limits = limits or DECODE_LIMITS
-    with Image.open(src) as im:                  # lazy: header only
+    try:
+        im_cm = Image.open(src)                  # lazy: header only
+    except Image.DecompressionBombError as e:
+        raise OversizedImage(f"exceeds Pillow pixel limit: {e}") from None
+    with im_cm as im:
         w, h = im.size; kind = decode_class(im)
+        if kind == "animated":
+            im.seek(0)
         if w * h > limits[kind]:
             raise OversizedImage(f"{w}x{h} {kind} exceeds {limits[kind] // 1_000_000} MP decode budget")
         try:

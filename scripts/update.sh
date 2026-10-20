@@ -36,12 +36,15 @@ rollback() {
   trap - ERR EXIT
   [ "$rc" -eq 0 ] && return 0
   echo "deploy of $NEW failed (rc=$rc); rolling back to $OLD" >&2
-  echo "$NEW" > "$BAD_FILE"
   git reset --hard --quiet "$OLD"
   .venv/bin/pip install -q -r requirements.txt >/dev/null 2>&1 || true
   $RESTART || echo "rollback: restart command failed" >&2
-  if healthy; then echo "rollback: $OLD is healthy on port $PORT" >&2
-  else echo "rollback: WARNING $OLD is NOT healthy on port $PORT after rollback; check journalctl -u pitv" >&2; fi
+  if healthy; then
+    echo "rollback: $OLD is healthy on port $PORT; marking $NEW as bad" >&2
+    echo "$NEW" > "$BAD_FILE"
+  else
+    echo "rollback: WARNING $OLD is NOT healthy on port $PORT either -> ENVIRONMENT problem (restart command, config.local.yaml, deps), not the commit; $NEW is NOT blacklisted and will be retried. Check journalctl -u pitv" >&2
+  fi
   exit "$rc"
 }
 trap rollback EXIT

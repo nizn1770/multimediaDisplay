@@ -12,6 +12,9 @@ def _merge(a, b):
     for k, v in (b or {}).items():
         a[k] = _merge(a.get(k, {}), v) if isinstance(v, dict) and isinstance(a.get(k), dict) else v
     return a
+INT_KEYS = [("server", "port"), ("drive", "sync_interval_sec"), ("drive", "max_cache_mb"),
+            ("calendar", "refresh_interval_sec"), ("slideshow", "seconds_per_photo"), ("slideshow", "max_width"),
+            ("slideshow", "max_height"), ("slideshow", "jpeg_quality"), ("weather", "forecast_days")]
 def load_config(path=None):
     cfg = copy.deepcopy(DEFAULTS)
     path = path or os.environ.get("PITV_CONFIG", os.path.join(os.path.dirname(__file__), "..", "config.local.yaml"))
@@ -23,6 +26,10 @@ def load_config(path=None):
         if isinstance(ucal, dict) and "calendar_ids" in ucal and "calendars" not in ucal:
             cfg["calendar"].pop("calendars", None)   # legacy key wins over the example placeholder
         _merge(cfg, user)
+    for sec, key in INT_KEYS:   # e.g. port: 08080 (kept as str by Loader) -> 8080
+        v = (cfg.get(sec) or {}).get(key)
+        if isinstance(v, str) and v.strip().isdigit():
+            cfg[sec][key] = int(v.strip(), 10)
     pin = (cfg.get("settings") or {}).get("pin")
     if pin is not None and not isinstance(pin, str):
         # unquoted 0123 is YAML-octal (83) / 1234 is int: keep digits as typed where we can

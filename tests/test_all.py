@@ -328,8 +328,15 @@ def _commit(work, name, txt):
 def _update(pi, env):
     return subprocess.run(["bash", "scripts/update.sh"], cwd=pi, env=env, capture_output=True, text=True)
 
+def _fail_once_curl(tmp_path, env):
+    """curl shim: first health probe (new commit) fails, later ones (rollback) pass."""
+    shim = tmp_path / "once"; shim.mkdir(exist_ok=True); flag = tmp_path / "curl_ok"
+    (shim / "curl").write_text(f'#!/bin/sh\n[ -f "{flag}" ] && exit 0; touch "{flag}"; exit 1\n'); os.chmod(shim / "curl", 0o755)
+    return {**env, "PATH": f"{shim}:{env['PATH']}"}, flag
+
 def test_qa3_bad_commit_recorded_and_skipped(tmp_path):
     work, pi, env = _deploy_env(tmp_path, health_ok=False)
+    env, _ = _fail_once_curl(tmp_path, env)
     old = _git(pi, "rev-parse", "HEAD"); bad = _commit(work, "v", "2")
     r = _update(pi, env); assert r.returncode != 0
     assert _git(pi, "rev-parse", "HEAD") == old and (pi / ".pitv-bad-commit").read_text().strip() == bad
@@ -548,7 +555,8 @@ def test_qa6_rollback_health_checked_and_logged(tmp_path):
     assert r.returncode != 0 and "rollback:" in r.stderr and "NOT healthy" in r.stderr
     shim = tmp_path / "bin"; shim.mkdir(); (shim / "curl").write_text('#!/bin/sh\n[ -f "$HOME/ok" ] && exit 0; touch "$HOME/ok"; exit 1\n')
     os.chmod(shim / "curl", 0o755); home = tmp_path / "home"; home.mkdir()
-    (pi / ".pitv-bad-commit").unlink()
+    assert not (pi / ".pitv-bad-commit").exists()     # rollback also unhealthy -> env problem, no blacklist
+    assert "ENVIRONMENT problem" in r.stderr
     env2 = {**env, "PATH": f"{shim}:{env['PATH']}", "HOME": str(home)}   # deploy health fails once, rollback health passes
     r = _update(pi, env2); assert r.returncode != 0 and "is healthy" in r.stderr
 
@@ -563,3 +571,37 @@ def test_qa6_mockdrive_unique_ids(tmp_path):
     md = MockDrive(str(folder)); ids = [f["id"] for f in md.list_images()]
     assert len(set(ids)) == 2
     s = PhotoSync(md, str(tmp_path / "c")); s.sync(); assert len(s.photos()) == 2
+
+
+# ---- post-signoff low items ----
+def test_low1_animated_images_budget(tmp_path):
+    def anim(size):
+        def mk(dest):
+            fr = [Image.new("RGB", size, (i * 40, 0, 0)) for i in range(4)]
+            fr[0].save(dest, "WEBP", save_all=True, append_images=fr[1:], duration=100)
+        return mk
+    small = tmp_path / "s.webp"; anim((1600, 1200))(str(small)); downscale(str(small), str(tmp_path / "o.jpg"))
+    assert Image.open(tmp_path / "o.jpg").size == (1440, 1080)
+    bigp = tmp_path / "b.webp"; anim((4000, 4000))(str(bigp))
+    with pytest.raises(OversizedImage): downscale(str(bigp), str(tmp_path / "o2.jpg"))
+    m = _measure(bigp); assert m["result"].startswith("oversized") and m["peak_mb"] < MEM_CAP_MB
+
+def test_low3_decompression_bomb_is_oversized_and_uses_thumbnail(tmp_path):
+    bomb = lambda d: Image.new("1", (18000, 18000)).save(d, "PNG")   # 324 MP > Pillow's 2x limit
+    p = tmp_path / "bomb.png"; bomb(str(p))
+    with pytest.raises(OversizedImage): downscale(str(p), str(tmp_path / "o.jpg"))
+    class TD(ImgDrive):
+        def thumbnail(s, fid, dest, size): Image.new("RGB", (size, size)).save(dest, "JPEG")
+    d = TD(tmp_path); d.add("bomb.png", bomb); s = PhotoSync(d, str(tmp_path / "c")); s.sync()
+    assert s.photos() == ["bomb.jpg"]
+
+def test_low2_env_problem_does_not_blacklist(tmp_path):
+    work, pi, env = _deploy_env(tmp_path, health_ok=False)   # nothing ever healthy (broken env)
+    _commit(work, "v", "2"); r = _update(pi, env)
+    assert r.returncode != 0 and "ENVIRONMENT problem" in r.stderr and not (pi / ".pitv-bad-commit").exists()
+    r = _update(pi, env); assert "skipping" not in r.stdout   # good commit retried next run
+
+@pytest.mark.parametrize("txt,val", [("server:\n  port: 08080\n", 8080), ("server:\n  port: '9090'\n", 9090), ("server:\n  port: 8081\n", 8081)])
+def test_low4_numeric_keys_coerced(tmp_path, txt, val):
+    p = tmp_path / "c.yaml"; p.write_text(txt + "drive:\n  sync_interval_sec: 0300\n")
+    c = load_config(str(p)); assert c["server"]["port"] == val and c["drive"]["sync_interval_sec"] == 300
