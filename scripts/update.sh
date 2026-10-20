@@ -3,6 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 BRANCH="${PITV_BRANCH:-main}"
+REMOTE_URL="${PITV_REMOTE_URL:-https://github.com/nizn1770/multimediaDisplay.git}"
+git remote get-url origin >/dev/null 2>&1 || git remote add origin "$REMOTE_URL"
 git fetch --quiet origin "$BRANCH"
 OLD=$(git rev-parse HEAD); NEW=$(git rev-parse "origin/$BRANCH")
 [ "$OLD" = "$NEW" ] && { echo "up to date ($OLD)"; exit 0; }

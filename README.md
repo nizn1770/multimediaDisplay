@@ -25,7 +25,7 @@ Mock is also the default in `config.example.yaml` (`mock: true`).
 ## Pi setup
 1. Flash **Raspberry Pi OS (64-bit, Bookworm) with Desktop** using Raspberry Pi Imager; in its settings enable SSH, set user `pi`, Wi-Fi, and hostname (e.g. `pitv`).
 2. `sudo apt update && sudo apt install -y git python3-venv chromium-browser curl wlr-randr cec-utils`
-3. `git clone <YOUR_GITHUB_REPO_URL> ~/pi-tv-display && cd ~/pi-tv-display`
+3. `git clone https://github.com/nizn1770/multimediaDisplay.git ~/pi-tv-display && cd ~/pi-tv-display`
 4. `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
 5. `cp config.example.yaml config.yaml` and edit (see Config). Put credentials in `secrets/` (gitignored).
 6. Install services:
@@ -73,7 +73,7 @@ Scopes are read-only (`drive.readonly`, `calendar.readonly`).
 
 ## Remote updates
 - **Auto-update:** `pitv-update.timer` runs `scripts/update.sh` every 5 min: `git fetch`; if `origin/main` moved, hard-reset to it, reinstall deps if `requirements.txt` changed, restart `pitv.service`, health-check `/healthz`, and roll back to the previous commit on failure. Branch via `PITV_BRANCH`. Logs: `journalctl -u pitv-update`. Force a run: `sudo systemctl start pitv-update`. The browser reloads itself every 6 h; for front-end changes immediately, `sudo systemctl restart pitv` then refresh (or reboot).
-- Private repo: use a read-only deploy key (`ssh-keygen -t ed25519`, add pubkey as GitHub Deploy Key, clone via `git@github.com:...`).
+- Repo: `github.com/nizn1770/multimediaDisplay` (branch `main`). If private, use a read-only deploy key (`ssh-keygen -t ed25519`, add pubkey as GitHub Deploy Key, clone via `git@github.com:...`).
 - **SSH:** `ssh pi@pitv.local`, then `cd ~/pi-tv-display`; edit `config.yaml`, `sudo systemctl restart pitv`, `journalctl -u pitv -f`.
 
 ## Night screen-off

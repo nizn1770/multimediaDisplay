@@ -5,4 +5,5 @@ After=network-online.target
 Type=oneshot
 User=pi
 WorkingDirectory=/home/pi/pi-tv-display
+Environment=PITV_BRANCH=main PITV_REMOTE_URL=https://github.com/nizn1770/multimediaDisplay.git
 ExecStart=/home/pi/pi-tv-display/scripts/update.sh
