@@ -13,11 +13,15 @@ class MockDrive:
         for n in sorted(os.listdir(self.folder)):
             p = os.path.join(self.folder, n)
             if not n.startswith(".") and os.path.isfile(p):
-                out.append({"id": n, "name": n, "mimeType": "",  # resolved from extension
+                out.append({"id": n.replace(".", "_"), "name": n, "mimeType": "",  # unique per extension; mime from ext
                             "modifiedTime": str(os.path.getmtime(p))})
         return out
+    def _path(self, file_id):
+        for n in os.listdir(self.folder):
+            if n.replace(".", "_") == file_id: return os.path.join(self.folder, n)
+        raise FileNotFoundError(file_id)
     def download(self, file_id, dest):
-        shutil.copyfile(os.path.join(self.folder, file_id), dest)
+        shutil.copyfile(self._path(file_id), dest)
 
 class MockCalendar:
     """list_events(cal_id, time_min, time_max) -> Google-shaped event dicts."""
@@ -61,14 +65,15 @@ SCOPES = ["https://www.googleapis.com/auth/drive.readonly",
 class GoogleDrive:
     def __init__(self, cfg):
         from googleapiclient.discovery import build
-        self.svc = build("drive", "v3", credentials=_creds(cfg, SCOPES), cache_discovery=False)
+        self.creds = _creds(cfg, SCOPES)
+        self.svc = build("drive", "v3", credentials=self.creds, cache_discovery=False)
         self.folder = cfg["drive"]["folder_id"]
     def list_images(self):
         out, token = [], None
         q = f"'{self.folder}' in parents and trashed=false and mimeType contains 'image/'"
         while True:
             r = self.svc.files().list(q=q, pageSize=1000, pageToken=token,
-                fields="nextPageToken, files(id,name,mimeType,modifiedTime)",
+                fields="nextPageToken, files(id,name,mimeType,modifiedTime,imageMediaMetadata(width,height))",
                 supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
             out += r.get("files", [])
             token = r.get("nextPageToken")
@@ -81,6 +86,17 @@ class GoogleDrive:
             done = False
             while not done:
                 _, done = d.next_chunk()
+
+    def thumbnail(self, file_id, dest, size=1920):
+        """Drive-rendered JPEG thumbnail (=s<size>): used for images too large to decode on the Pi."""
+        from google.auth.transport.requests import AuthorizedSession
+        link = self.svc.files().get(fileId=file_id, fields="thumbnailLink", supportsAllDrives=True).execute().get("thumbnailLink")
+        if not link:
+            raise RuntimeError("Drive has no thumbnail for this file")
+        import re
+        link = re.sub(r"=s\d+(-c)?$", "", link) + f"=s{int(size)}"
+        r = AuthorizedSession(self.creds).get(link, timeout=60); r.raise_for_status()
+        with open(dest, "wb") as fh: fh.write(r.content)
 
 class GoogleCalendar:
     def __init__(self, cfg):

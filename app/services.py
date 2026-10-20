@@ -15,11 +15,37 @@ if HEIF:
 _EXT_MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
              ".bmp": "image/bmp", ".tif": "image/tiff", ".tiff": "image/tiff", ".heic": "image/heic", ".heif": "image/heif"}
 
-def downscale(src, dest, max_w=1920, max_h=1080, quality=85):
+class OversizedImage(Exception):
+    """Image would need too much RAM to decode on a 1 GB Pi; use a Drive thumbnail instead."""
+
+# Peak-RAM budgets per decoder (pixels). Baseline JPEGs use DCT-domain scaling (draft) so any size is
+# cheap; progressive JPEGs buffer all coefficients (~3 bytes/px) and HEIC/PNG decode at full size.
+DECODE_LIMITS = {"jpeg_baseline": 150_000_000, "jpeg_progressive": 12_500_000, "heif": 12_500_000, "other": 16_000_000}
+HARD_MAX_PIXELS = 160_000_000
+
+def _set_pil_limits():
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = HARD_MAX_PIXELS     # decompression-bomb guard (header-checked by PIL)
+    if HEIF:
+        pillow_heif.options.DECODE_THREADS = 1   # fewer parallel buffers on a 4-core/1 GB Pi
+
+def decode_class(im):
+    if im.format == "JPEG":
+        return "jpeg_progressive" if (im.info.get("progressive") or im.info.get("progression")) else "jpeg_baseline"
+    if im.format in ("HEIF", "HEIC", "AVIF"):
+        return "heif"
+    return "other"
+
+def downscale(src, dest, max_w=1920, max_h=1080, quality=85, limits=None):
     """Fix EXIF orientation, shrink to fit max_w x max_h, save JPEG. Never upscales.
-    JPEGs are decoded at reduced scale via draft() so huge originals don't need full-res RAM."""
+    Dimensions are read from the header first; images whose decoder would exceed the RAM budget
+    raise OversizedImage *before* decoding. Baseline JPEGs decode at reduced scale via draft()."""
     from PIL import Image, ImageOps
-    with Image.open(src) as im:
+    _set_pil_limits(); limits = limits or DECODE_LIMITS
+    with Image.open(src) as im:                  # lazy: header only
+        w, h = im.size; kind = decode_class(im)
+        if w * h > limits[kind]:
+            raise OversizedImage(f"{w}x{h} {kind} exceeds {limits[kind] // 1_000_000} MP decode budget")
         try:
             orient = im.getexif().get(0x0112, 1)
         except Exception:
@@ -28,7 +54,7 @@ def downscale(src, dest, max_w=1920, max_h=1080, quality=85):
         if im.format == "JPEG":
             im.draft("RGB", req)          # DCT scaling: 8000x6000 decodes as 2000x1500
         im.thumbnail(req, Image.LANCZOS)  # shrink BEFORE rotate/convert to keep RAM low
-        im = ImageOps.exif_transpose(im)
+        im = ImageOps.exif_transpose(im)  # (pillow-heif already applies HEIF irot/imir on decode)
         if im.mode not in ("RGB", "L"):
             rgba = im.convert("RGBA"); bg = Image.new("RGB", im.size, (0, 0, 0))
             bg.paste(rgba, mask=rgba.split()[-1]); im = bg
@@ -55,6 +81,7 @@ class PhotoSync:
             except Exception:
                 log.warning("manifest unreadable; rebuilding")
         self.last_error, self.last_sync, self.skipped = None, None, []
+        self.offline, self.warnings = False, []
         self.lock = threading.Lock()
 
     @staticmethod
@@ -68,11 +95,28 @@ class PhotoSync:
             m = _EXT_MIME.get(os.path.splitext(f.get("name", ""))[1].lower(), m)
         return m
 
+    def _thumb(self, f, raw, tmp):
+        if not hasattr(self.drive, "thumbnail"):
+            raise OversizedImage("too large to decode on this Pi and no Drive thumbnail available")
+        self.drive.thumbnail(f["id"], raw, max(self.max_w, self.max_h))
+        downscale(raw, tmp, self.max_w, self.max_h, self.quality)
+
     def _fetch(self, f, name):
         dest = os.path.join(self.cache, name); tmp = dest + ".part"; raw = tmp + ".raw"
+        meta = f.get("imageMediaMetadata") or {}
+        known_px = (meta.get("width") or 0) * (meta.get("height") or 0)
         try:
-            self.drive.download(f["id"], raw)
-            downscale(raw, tmp, self.max_w, self.max_h, self.quality)
+            if known_px > min(DECODE_LIMITS.values()) and hasattr(self.drive, "thumbnail"):
+                self._thumb(f, raw, tmp)          # skip downloading a huge original at all
+            else:
+                self.drive.download(f["id"], raw)
+                try:
+                    downscale(raw, tmp, self.max_w, self.max_h, self.quality)
+                except OversizedImage as e:
+                    if not hasattr(self.drive, "thumbnail"):
+                        raise OversizedImage(f"{e}; no Drive thumbnail available") from None
+                    log.info("%s: %s; using Drive thumbnail", f.get("name"), e)
+                    os.remove(raw); self._thumb(f, raw, tmp)
             os.replace(tmp, dest)
             return os.path.getsize(dest)
         finally:
@@ -84,7 +128,8 @@ class PhotoSync:
             try:
                 files = self.drive.list_images()
             except Exception as e:
-                self.last_error = f"Drive list failed: {e}"; log.warning(self.last_error); return False
+                self.last_error = f"Drive list failed: {e}"; self.offline = True
+                log.warning(self.last_error); return False
             errors = []
             files = sorted(files, key=lambda f: f.get("modifiedTime") or "", reverse=True)  # newest first
             wanted = {}
@@ -135,7 +180,8 @@ class PhotoSync:
             os.replace(tmp, self.manifest_path)
             self.skipped = [n for n, e in self.manifest.items() if e["state"] == "skipped"]
             self.last_sync = time.time()
-            self.last_error = ("Some photos skipped: " + "; ".join(errors[:3])) if errors else None
+            self.offline, self.last_error = False, None
+            self.warnings = [f"skipped {n}: {self.manifest[n].get('err', '')}" for n in self.skipped][:20]
             return True
 
     def photos(self):
@@ -164,6 +210,7 @@ class CalendarService:
         self.ids = [c["id"] for c in self.cals]
         self.color = {c["id"]: c["color"] for c in self.cals}
         self.events, self.last_error, self.last_fetch, self.bad_events = [], None, None, 0
+        self.offline, self.warnings = False, []
     def refresh(self, today=None):
         today = today or dt.datetime.now(self.tz).date()
         start = dt.datetime.combine(today.replace(day=1) - dt.timedelta(days=7), dt.time(), self.tz)
@@ -173,7 +220,8 @@ class CalendarService:
             for cid in self.ids:
                 raw += [(cid, e) for e in (self.cal.list_events(cid, start, end) or [])]
         except Exception as e:
-            self.last_error = f"Calendar fetch failed: {e}"; log.warning(self.last_error); return False
+            self.last_error = f"Calendar fetch failed: {e}"; self.offline = True
+            log.warning(self.last_error); return False
         evs, seen, bad = [], set(), 0
         for cid, e in raw:
             try:
@@ -190,7 +238,8 @@ class CalendarService:
                 bad += 1; log.warning("skipping malformed event %r: %s", e.get("id") if isinstance(e, dict) else e, ex)
         evs.sort(key=lambda x: (x["start"][:10], not x["all_day"], x["start"]))
         self.events, self.last_fetch, self.bad_events = evs, time.time(), bad
-        self.last_error = f"Skipped {bad} malformed event(s)" if bad else None
+        self.offline, self.last_error = False, None
+        self.warnings = [f"skipped {bad} malformed event(s)"] if bad else []
         return True
     def days_for(self, ev):
         """Local dates an event covers (all-day end is exclusive; timed end at 00:00 exclusive)."""

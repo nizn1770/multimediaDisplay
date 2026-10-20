@@ -69,11 +69,12 @@ Scopes are read-only (`drive.readonly`, `calendar.readonly`).
 ## Screen hours, settings page, CLI
 - Hours are in `config.local.yaml` (`night.on_at` / `night.off_at`, default 06:30 / 23:00 America/Chicago). The server checks them every 30 s and runs `scripts/screen.sh on|off` (HDMI-CEC + xrandr) on each change; there's no cron.
 - `http://pitv.local:8080/settings` (LAN/private IPs only, optional `settings.pin`) edits the hours and sends prev/next/pause/resume/photos/week/month. It validates input, writes `config.local.yaml` atomically and applies immediately.
-- PIN: quote it in YAML (`pin: "0123"`). `./pitv control` sends `$PITV_PIN`.
+- PIN: leading zeros are kept (`0123`, `0000`, `{pin: 0123}` all stay strings); quoting is still recommended. `./pitv control` sends `$PITV_PIN`.
 - CLI: `./pitv set-hours 06:30 23:00`, `./pitv night on|off`, `./pitv show-config [--reveal]`, `./pitv screen on|off`, `./pitv control <action>`, `./pitv status`, `./pitv get server.port`. Edits made by hand or with the CLI are picked up within 30 s without a restart.
 - API: `GET/POST /api/settings` (`{on_at, off_at, enabled, pin}`), `POST /api/control` (`{action, pin}`).
 
 ## Pi 3B+ performance
+- Decode RAM budget: the image header is checked before decoding. Baseline JPEGs decode at reduced scale (any size up to 150 MP); progressive JPEG and HEIC up to 12.5 MP; other formats up to 16 MP. Anything larger uses the Drive-rendered thumbnail (`thumbnailLink=s1920`, chosen up front when Drive reports the dimensions); if there's no thumbnail it's skipped with a warning. `PIL.Image.MAX_IMAGE_PIXELS` = 160 MP. Measured peaks per image (fresh process, ~26 MB baseline): 48 MP baseline JPEG 53 MB, 12 MP progressive 73 MB, 12 MP HEIC 111 MB, 16 MP PNG ~109 MB, oversized ~27 MB. Check one with `scripts/measure_decode.py IMG`.
 - Photos are EXIF-rotated, downscaled to fit `slideshow.max_width` x `max_height` (default 1920x1080, never upscaled) and re-encoded as JPEG q85 at sync time. Originals never reach the browser. The cache is capped at `drive.max_cache_mb` (default 500); the oldest photos by Drive modified time are dropped first.
 - Chromium runs with one renderer process, no extensions, a 32 MB disk cache, a JS heap cap and a throwaway profile, and restarts if it crashes. The page reloads every 6 h. The CSS uses only opacity transitions (no blur, shadows or filters).
 - Recommended: swap (rpi-swap on Trixie / 256 MB dphys on Bookworm), `gpu_mem` default (128 max), the official 5V 2.5A PSU (see docs/PI_SETUP.md).
@@ -85,8 +86,9 @@ Scopes are read-only (`drive.readonly`, `calendar.readonly`).
 
 ## Behaviour notes
 - Photo sync: downloads only new/changed files (manifest by `modifiedTime`), one at a time, writes atomically, prunes deleted ones. JPEG, PNG, GIF, WebP, BMP, TIFF and HEIC are supported; other types and corrupt files are recorded as skipped and retried only if changed. Capped photos come back when space frees up. Photo URLs carry `?v=` so changed photos aren't cached stale; if Drive is unreachable the existing cache keeps showing.
+- API: `/api/photos` and `/api/events` return `offline` (the last fetch failed, so cached data is shown) separately from `warnings` (skipped files or events). The TV shows an offline banner only when `offline` is true; warnings appear as a small ⚠N next to "last synced".
 - UI extras: 3-day forecast, today's agenda strip (next 3 events), "last synced" indicator, per-calendar colors.
-- Calendar: fetches previous week through ~7 weeks; all-day end dates are exclusive; timed events are converted to `timezone` and span every day they touch; cancelled events ignored; malformed events are skipped and reported; duplicates across calendars are merged by iCalUID; times without an offset use the event's timeZone (else `timezone`); last good data kept when offline (UI shows "Calendar offline (cached)").
+- Calendar: fetches previous week through ~7 weeks; all-day end dates are exclusive; timed events are converted to `timezone` and span every day they touch; cancelled events ignored; malformed events are skipped and reported as `warnings`; duplicates across calendars are merged by iCalUID; times without an offset use the event's timeZone (else `timezone`); last good data kept when offline (UI shows "Calendar offline (cached)").
 
 ## Testing / injecting clients
 `create_app(cfg, drive=..., calendar=..., start_background=False, weather_fn=...)` accepts any objects with:

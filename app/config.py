@@ -1,21 +1,22 @@
 import copy, os, re, yaml
-DEFAULTS = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), "..", "config.example.yaml")))
+
+class Loader(yaml.SafeLoader):
+    """SafeLoader that keeps leading-zero numbers (0123, 0000, 06) as strings instead of
+    YAML-1.1 octal/ints, in block and flow style alike."""
+Loader.yaml_implicit_resolvers = {k: list(v) for k, v in yaml.SafeLoader.yaml_implicit_resolvers.items()}
+Loader.yaml_implicit_resolvers["0"] = [("tag:yaml.org,2002:str", re.compile(r"^0[0-9_]+$"))] + \
+    Loader.yaml_implicit_resolvers.get("0", [])
+def _load(fh): return yaml.load(fh, Loader=Loader)
+DEFAULTS = _load(open(os.path.join(os.path.dirname(__file__), "..", "config.example.yaml")))
 def _merge(a, b):
     for k, v in (b or {}).items():
         a[k] = _merge(a.get(k, {}), v) if isinstance(v, dict) and isinstance(a.get(k), dict) else v
     return a
-def _looks_octal(path, val):
-    """True if the raw YAML wrote the pin with a leading 0 (YAML 1.1 octal)."""
-    try:
-        m = re.search(r"^\s*pin:\s*(0[0-7]+)\s*(#.*)?$", open(path).read(), re.M)
-        return bool(m) and int(m.group(1), 8) == val
-    except Exception:
-        return False
 def load_config(path=None):
     cfg = copy.deepcopy(DEFAULTS)
     path = path or os.environ.get("PITV_CONFIG", os.path.join(os.path.dirname(__file__), "..", "config.local.yaml"))
     if os.path.exists(path):
-        user = yaml.safe_load(open(path)) or {}
+        user = _load(open(path)) or {}
         if not isinstance(user, dict):
             raise ValueError(f"{path}: top level must be a mapping")
         ucal = user.get("calendar") or {}
@@ -25,7 +26,7 @@ def load_config(path=None):
     pin = (cfg.get("settings") or {}).get("pin")
     if pin is not None and not isinstance(pin, str):
         # unquoted 0123 is YAML-octal (83) / 1234 is int: keep digits as typed where we can
-        cfg["settings"]["pin"] = oct(pin)[2:].zfill(4) if isinstance(pin, int) and pin and _looks_octal(path, pin) else str(pin)
+        cfg["settings"]["pin"] = str(pin)   # leading zeros are already preserved by Loader
     for k in ("on_at", "off_at"):  # unquoted 06:30 in YAML 1.1 parses as base-60 int (390)
         v = cfg["night"].get(k)
         if isinstance(v, int): cfg["night"][k] = f"{v // 60:02d}:{v % 60:02d}"
@@ -59,7 +60,7 @@ _Dumper.add_representer(str, _str)
 def save_local(updates, path=None):
     """Deep-merge updates into config.local.yaml atomically (preserves other keys)."""
     path = path or local_path()
-    cur = (yaml.safe_load(open(path)) or {}) if os.path.exists(path) else {}
+    cur = (_load(open(path)) or {}) if os.path.exists(path) else {}
     _merge(cur, updates)
     d = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".cfg-", suffix=".yaml")

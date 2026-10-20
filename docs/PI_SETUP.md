@@ -73,7 +73,7 @@ Never commit this file. It's gitignored, and the pre-commit hook blocks IDs and 
 
 ## 7. Screen hours and remote control
 - Defaults: on **06:30**, off **23:00** (America/Chicago), stored in `config.local.yaml` under `night:`.
-- **From a phone or laptop on your Wi-Fi:** open `http://pitv.local:8080/settings`. You can edit the hours, turn night-off on or off, and use prev/next/pause/resume/photos/week/month. Changes apply immediately, with no restart. Only private (LAN) addresses can reach it. Optional PIN: set `settings.pin: "1234"` in `config.local.yaml`. **Quote it**: unquoted `0123` is read as an octal number. The app corrects the common cases, but quoting is safest.
+- **From a phone or laptop on your Wi-Fi:** open `http://pitv.local:8080/settings`. You can edit the hours, turn night-off on or off, and use prev/next/pause/resume/photos/week/month. Changes apply immediately, with no restart. Only private (LAN) addresses can reach it. Optional PIN: set `settings.pin: "1234"` in `config.local.yaml`. Leading zeros are kept (`0123` stays `0123`); quoting it is still a good habit.
 - **From SSH:**
   ```bash
   cd ~/pi-tv-display
@@ -104,7 +104,7 @@ free -m; vcgencmd measure_temp; vcgencmd get_throttled   # throttled=0x0 is good
 | "Server unreachable" on screen | `systemctl status pitv`, `journalctl -u pitv -n 50`. Usually a YAML typo in `config.local.yaml`; `./pitv show-config` shows parse errors. |
 | Sample photos instead of yours | `mock: true` is still set, or the folder isn't shared with the service-account email. Check `journalctl -u pitv | grep -i drive`. |
 | Calendar empty / "Calendar offline" | Calendar not shared with the service account, or wrong calendar ID. |
-| Photo missing from slideshow | Unsupported type (e.g. videos) or a corrupt file is skipped and logged: `journalctl -u pitv | grep -i skipped`. It's retried if the file changes in Drive. The cache cap (`drive.max_cache_mb`) keeps only the newest photos. |
+| Photo missing from slideshow | Unsupported type (e.g. videos), a corrupt file, or a very large photo with no Drive thumbnail is skipped and logged: `journalctl -u pitv | grep -i skipped`. It's retried if the file changes in Drive. The cache cap (`drive.max_cache_mb`) keeps only the newest photos. |
 | Auto-update stuck on an old version | A commit that failed to start is skipped until a newer one is pushed: `cat ~/pi-tv-display/.pitv-bad-commit`. Delete that file to retry. |
 | Lightning-bolt icon / random freezes | Under-voltage: use the official 2.5A supply. `vcgencmd get_throttled` should be `0x0`. |
 | Slow or stuttery fades | Set `gpu_mem=128`, add 256 MB swap, use 1280x720 photos (section 4). |

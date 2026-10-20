@@ -249,7 +249,7 @@ def test_custom_max_size(tmp_path):
 def test_corrupt_image_skipped_not_fatal(tmp_path):
     d = ImgDrive(tmp_path); d.add("ok.jpg", big); d.add("bad.jpg", lambda p: open(p, "wb").write(b"notanimage"))
     s = PhotoSync(d, str(tmp_path / "c")); s.sync()
-    assert s.photos() == ["ok.jpg"] and "bad.jpg" in s.last_error
+    assert s.photos() == ["ok.jpg"] and "bad.jpg" in " ".join(s.warnings) and not s.offline and s.last_error is None
 
 def test_cache_cap_keeps_newest(tmp_path):
     def noise(dest):
@@ -388,10 +388,10 @@ def test_qa7_malformed_events_skipped_and_reported(tmp_path):
           {"id": "garbage", "start": {"dateTime": "not-a-date"}, "end": {"dateTime": "x"}},
           {"id": "ok", "start": {"date": "2026-10-20"}, "end": {"date": "2026-10-21"}}]
     c = CalendarService(FakeCal(ev), ["p"], "America/Chicago"); assert c.refresh(dt.date(2026, 10, 20))
-    assert [e["id"] for e in c.events] == ["ok"] and "3" in c.last_error
+    assert [e["id"] for e in c.events] == ["ok"] and "3" in " ".join(c.warnings) and not c.offline
     cfg = load_config("/nonexistent"); cfg["drive"]["cache_dir"] = str(tmp_path)
     app = create_app(cfg, drive=FakeDrive(FIX), calendar=FakeCal(ev), start_background=False).test_client()
-    assert app.get("/api/events").get_json()["error"]
+    j = app.get("/api/events").get_json(); assert j["warnings"] and j["offline"] is False and j["error"] is None
 
 def test_qa8_scripts_read_port_from_config(tmp_path):
     for f in ("scripts/update.sh", "scripts/kiosk.sh"):
@@ -461,3 +461,105 @@ def test_qa15_versions_dedupe_naive_tz_mock_dst(tmp_path):
     want = dt.datetime.now(ZoneInfo("America/Chicago")).strftime("%z"); want = want[:3] + ":" + want[3:]
     assert offs <= {"-05:00", "-06:00"} and offs   # real DST-aware offsets, not hard-coded
     assert "/config.local.yaml" in open(os.path.join(ROOT, "deploy", "pitv.service")).read()
+
+# ---- QA iteration-6 regressions ----
+from app.services import OversizedImage, DECODE_LIMITS
+MEM_CAP_MB = 120
+
+def _mk(path, code):
+    subprocess.run([sys.executable, "-c", "from PIL import Image\nimport pillow_heif; pillow_heif.register_heif_opener()\n" + code.replace("OUT", repr(str(path)))], check=True)
+
+def _measure(path):
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "measure_decode.py"), str(path)], capture_output=True, text=True, check=True)
+    return _json.loads(r.stdout.strip().splitlines()[-1])
+
+MEM_CASES = {
+    "baseline_48mp.jpg": ("Image.new('RGB',(8000,6000),(9,99,199)).save(OUT, quality=90)", "1440x1080"),
+    "progressive_48mp.jpg": ("Image.new('RGB',(8000,6000),(9,99,199)).save(OUT, progressive=True)", "oversized"),
+    "progressive_108mp.jpg": ("Image.new('RGB',(12000,9000),(9,99,199)).save(OUT, progressive=True)", "oversized"),
+    "progressive_12mp.jpg": ("Image.new('RGB',(4000,3000),(9,99,199)).save(OUT, progressive=True)", "1440x1080"),
+    "heic_12mp.heic": ("Image.new('RGB',(4000,3000),(9,99,199)).save(OUT, format='HEIF')", "1440x1080"),
+    "heic_48mp.heic": ("Image.new('RGB',(8000,6000),(9,99,199)).save(OUT, format='HEIF')", "oversized"),
+    "png_16mp.png": ("Image.new('RGB',(4000,4000),(9,99,199)).save(OUT)", "1080x1080"),
+}
+
+@pytest.mark.parametrize("name", sorted(MEM_CASES))
+def test_qa6_decode_memory_cap(tmp_path, name):
+    pytest.importorskip("pillow_heif")
+    code, expect = MEM_CASES[name]; p = tmp_path / name; _mk(p, code)
+    m = _measure(p)
+    assert m["result"].startswith(expect), m
+    assert m["peak_mb"] < MEM_CAP_MB, f"{name}: peak {m['peak_mb']} MB ({m})"
+
+def test_qa6_oversized_uses_drive_thumbnail(tmp_path):
+    class ThumbDrive(ImgDrive):
+        def __init__(s, t): super().__init__(t); s.thumbs, s.downloads = [], []
+        def download(s, fid, dest): s.downloads.append(fid); super().download(fid, dest)
+        def thumbnail(s, fid, dest, size): s.thumbs.append((fid, size)); Image.new("RGB", (size, size * 3 // 4)).save(dest, "JPEG")
+    big_prog = lambda d: Image.new("RGB", (6000, 4000)).save(d, "JPEG", progressive=True)   # 24 MP progressive
+    d = ThumbDrive(tmp_path); d.add("prog.jpg", big_prog); d.add("meta.jpg", big)
+    real = d.list_images   # meta.jpg advertises its size -> thumbnail fetched without downloading original
+    d.list_images = lambda: [dict(f, imageMediaMetadata={"width": 9000, "height": 6000}) if f["id"] == "meta.jpg" else f for f in real()]
+    s = PhotoSync(d, str(tmp_path / "c")); s.sync()
+    assert s.photos() == ["meta.jpg", "prog.jpg"] and d.downloads == ["prog.jpg"]
+    assert sorted(t[0] for t in d.thumbs) == ["meta.jpg", "prog.jpg"] and all(t[1] == 1920 for t in d.thumbs)
+    assert Image.open(tmp_path / "c" / "prog.jpg").size == (1440, 1080)
+
+def test_qa6_oversized_without_thumbnail_skipped_with_warning(tmp_path):
+    d = ImgDrive(tmp_path); d.add("prog.jpg", lambda p: Image.new("RGB", (6000, 4000)).save(p, "JPEG", progressive=True))
+    s = PhotoSync(d, str(tmp_path / "c")); s.sync()
+    assert s.photos() == [] and "prog.jpg" in s.skipped and "decode budget" in " ".join(s.warnings) and not s.offline
+
+def test_qa6_max_image_pixels_set(tmp_path):
+    from PIL import Image as I
+    src = tmp_path / "a.jpg"; big(str(src)); downscale(str(src), str(tmp_path / "b.jpg"))
+    assert I.MAX_IMAGE_PIXELS and I.MAX_IMAGE_PIXELS <= 200_000_000
+
+def test_qa6_heic_orientation(tmp_path):
+    pytest.importorskip("pillow_heif")
+    src = tmp_path / "rot.heic"
+    _mk(src, "im=Image.new('RGB',(4000,3000),(200,0,0)); ex=Image.Exif(); ex[0x0112]=6; im.save(OUT, format='HEIF', exif=ex.tobytes())")
+    downscale(str(src), str(tmp_path / "o.jpg"))
+    assert Image.open(tmp_path / "o.jpg").size == (810, 1080)   # rotated to portrait
+
+def test_qa6_offline_vs_warnings_api(tmp_path):
+    cfg = load_config("/nonexistent"); cfg["drive"]["cache_dir"] = str(tmp_path)
+    d = ImgDrive(tmp_path); d.add("bad.jpg", lambda p: open(p, "wb").write(b"x"))
+    ev = [{"id": "x", "start": {"date": "2026-10-20"}}]
+    app = create_app(cfg, drive=d, calendar=FakeCal(ev), start_background=False).test_client()
+    p, e = app.get("/api/photos").get_json(), app.get("/api/events").get_json()
+    assert p["offline"] is False and p["warnings"] and p["error"] is None
+    assert e["offline"] is False and e["warnings"] and e["error"] is None
+    js = open(os.path.join(ROOT, "app", "static", "app.js")).read()
+    assert "d.error" not in js and "offline" in js     # banner keyed on offline only
+    cfg2 = load_config("/nonexistent"); cfg2["drive"]["cache_dir"] = str(tmp_path / "2")
+    fd = FakeDrive(FIX); fd.fail = True; fc = FakeCal([]); fc.fail = True
+    app2 = create_app(cfg2, drive=fd, calendar=fc, start_background=False).test_client()
+    assert app2.get("/api/photos").get_json()["offline"] is True and app2.get("/api/events").get_json()["offline"] is True
+
+@pytest.mark.parametrize("yaml_text,pin", [("settings: {pin: 0123}\n", "0123"), ("settings:\n  pin: 0000\n", "0000"),
+    ("settings:\n  pin: 0123\n", "0123"), ("settings:\n  pin: 4321\n", "4321"), ("settings:\n  pin: '0042'\n", "0042")])
+def test_qa6_pin_leading_zeros(tmp_path, yaml_text, pin):
+    p = tmp_path / "c.yaml"; p.write_text(yaml_text); assert load_config(str(p))["settings"]["pin"] == pin
+
+def test_qa6_rollback_health_checked_and_logged(tmp_path):
+    work, pi, env = _deploy_env(tmp_path, health_ok=False)
+    _commit(work, "v", "2"); r = _update(pi, env)
+    assert r.returncode != 0 and "rollback:" in r.stderr and "NOT healthy" in r.stderr
+    shim = tmp_path / "bin"; shim.mkdir(); (shim / "curl").write_text('#!/bin/sh\n[ -f "$HOME/ok" ] && exit 0; touch "$HOME/ok"; exit 1\n')
+    os.chmod(shim / "curl", 0o755); home = tmp_path / "home"; home.mkdir()
+    (pi / ".pitv-bad-commit").unlink()
+    env2 = {**env, "PATH": f"{shim}:{env['PATH']}", "HOME": str(home)}   # deploy health fails once, rollback health passes
+    r = _update(pi, env2); assert r.returncode != 0 and "is healthy" in r.stderr
+
+def test_qa6_update_warns_when_port_unreadable(tmp_path):
+    work, pi, env = _deploy_env(tmp_path, health_ok=True)
+    (pi / "pitv").write_text("#!/bin/sh\nexit 1\n"); env = {k: v for k, v in env.items() if k != "PITV_PORT"}
+    r = _update(pi, env); assert "assuming 8080" in r.stderr
+
+def test_qa6_mockdrive_unique_ids(tmp_path):
+    from app.clients import MockDrive
+    folder = tmp_path / "f"; folder.mkdir(); big(str(folder / "a.jpg")); png(str(folder / "a.png"))
+    md = MockDrive(str(folder)); ids = [f["id"] for f in md.list_images()]
+    assert len(set(ids)) == 2
+    s = PhotoSync(md, str(tmp_path / "c")); s.sync(); assert len(s.photos()) == 2

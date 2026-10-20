@@ -77,12 +77,12 @@ def create_app(cfg=None, drive=None, calendar=None, start_background=True, weath
     def api_photos():
         names = photos.photos()
         return jsonify(photos=names, versions={n: photos.version(n) for n in names}, skipped=len(photos.skipped), interval=cfg["slideshow"]["seconds_per_photo"],
-                       last_sync=photos.last_sync, error=photos.last_error)
+                       last_sync=photos.last_sync, offline=photos.offline, error=photos.last_error, warnings=photos.warnings)
     @app.get("/api/events")
     def api_events():
         return jsonify(events=cal.events, by_day={k: [e["id"] for e in v] for k, v in cal.by_day().items()},
                        today=dt.datetime.now(tz).date().isoformat(), agenda=cal.agenda(),
-                       calendars=cal.cals, last_fetch=cal.last_fetch, error=cal.last_error)
+                       calendars=cal.cals, last_fetch=cal.last_fetch, offline=cal.offline, error=cal.last_error, warnings=cal.warnings)
     @app.get("/api/status")
     def api_status():
         reload_cfg(); now = dt.datetime.now(tz); n = cfg["night"]

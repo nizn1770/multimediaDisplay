@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Launch Chromium fullscreen once the server is healthy. Flags tuned for a 1 GB Pi 3B+.
 cd "$(dirname "$0")/.." || exit 1
-PORT="${PITV_PORT:-$(./pitv get server.port 2>/dev/null || echo 8080)}"
+if [ -n "${PITV_PORT:-}" ]; then PORT=$PITV_PORT
+elif ! PORT=$(./pitv get server.port 2>/dev/null) || [ -z "$PORT" ]; then
+  echo "WARNING: could not read server.port; assuming 8080" >&2; PORT=8080
+fi
 URL="http://127.0.0.1:$PORT/"
 until curl -fs "${URL}healthz" >/dev/null; do sleep 2; done
 B=$(command -v chromium || command -v chromium-browser)
