@@ -1,0 +1,28 @@
+mock: true                      # true = fixtures, no Google accounts needed
+timezone: America/Chicago
+drive:
+  folder_id: "YOUR_DRIVE_FOLDER_ID"
+  sync_interval_sec: 300
+  cache_dir: ./cache/photos
+calendar:
+  calendar_ids: ["primary"]
+  refresh_interval_sec: 600
+credentials:
+  type: service_account          # or "oauth"
+  service_account_file: ./secrets/service-account.json
+  oauth_client_file: ./secrets/oauth-client.json
+  oauth_token_file: ./secrets/token.json
+slideshow:
+  seconds_per_photo: 15
+weather:
+  enabled: true
+  latitude: 41.88
+  longitude: -87.63
+  units: fahrenheit
+night:
+  enabled: true
+  off_at: "23:00"
+  on_at: "06:30"
+server:
+  host: 127.0.0.1
+  port: 8080

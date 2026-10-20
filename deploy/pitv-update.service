@@ -1,0 +1,8 @@
+[Unit]
+Description=Pi TV auto-update (git pull + redeploy)
+After=network-online.target
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/pi-tv-display
+ExecStart=/home/pi/pi-tv-display/scripts/update.sh

@@ -1,0 +1,8 @@
+[Unit]
+Description=Check GitHub for Pi TV updates every 5 minutes
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+[Install]
+WantedBy=timers.target

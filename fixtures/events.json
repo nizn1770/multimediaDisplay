@@ -1,0 +1,8 @@
+[
+ {"id":"e1","summary":"Dentist","day_offset":0,"start":"09:30","minutes":60},
+ {"id":"e2","summary":"Soccer practice","day_offset":1,"start":"17:00","minutes":90},
+ {"id":"e3","summary":"Family vacation","day_offset":3,"all_day_days":3},
+ {"id":"e4","summary":"Overnight flight","day_offset":2,"start":"22:00","minutes":480},
+ {"id":"e5","summary":"Birthday","day_offset":10,"all_day_days":1},
+ {"id":"e6","summary":"Call w/ London (UTC)","day_offset":5,"start":"15:00","minutes":30,"tz_offset":"+00:00"}
+]

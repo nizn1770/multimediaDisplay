@@ -1,0 +1,7 @@
+[Unit]
+Description=Turn TV display on/off (arg: on|off)
+[Service]
+Type=oneshot
+User=pi
+Environment=WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/home/pi/pi-tv-display/scripts/screen.sh %i
