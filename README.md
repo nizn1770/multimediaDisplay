@@ -76,7 +76,7 @@ Scopes are read-only (`drive.readonly`, `calendar.readonly`).
 ## Remote updates
 - **Auto-update:** `pitv-update.timer` runs `scripts/update.sh` every 5 min: `git fetch`; if `origin/main` moved, hard-reset to it, reinstall deps if `requirements.txt` changed, restart `pitv.service`, health-check `/healthz`, and roll back to the previous commit on failure. Branch via `PITV_BRANCH`. Logs: `journalctl -u pitv-update`. Force a run: `sudo systemctl start pitv-update`. The browser reloads itself every 6 h; for front-end changes immediately, `sudo systemctl restart pitv` then refresh (or reboot).
 - Repo: `github.com/nizn1770/multimediaDisplay` (branch `main`). If private, use a read-only deploy key (`ssh-keygen -t ed25519`, add pubkey as GitHub Deploy Key, clone via `git@github.com:...`).
-- **SSH:** `ssh pi@pitv.local`, then `cd ~/pi-tv-display`; edit `config.yaml`, `sudo systemctl restart pitv`, `journalctl -u pitv -f`.
+- **SSH:** `ssh pi@pitv.local`, then `cd ~/pi-tv-display`; edit `config.local.yaml`, `sudo systemctl restart pitv`, `journalctl -u pitv -f`.
 
 ## Night screen-off
 The UI blacks out during `night.off_at`–`on_at`. To actually power the TV/HDMI down, add timers or cron:
