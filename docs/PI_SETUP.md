@@ -52,7 +52,9 @@ The Pi 3B+ is supported by the current 64-bit Raspberry Pi OS. Lite has no deskt
 - Reboot after these changes: `sudo reboot`.
 
 ## 5. One-command install
+Raspberry Pi OS Lite doesn't include git, so install it first:
 ```bash
+sudo apt install -y git
 git clone https://github.com/nizn1770/multimediaDisplay.git ~/pi-tv-display && cd ~/pi-tv-display && ./install.sh
 ```
 It's safe to run again; it skips anything already done. Preview without changing anything: `./install.sh --dry-run`. On a 3B+ it takes about 10–15 minutes, mostly installing Chromium.
