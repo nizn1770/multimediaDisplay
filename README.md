@@ -29,7 +29,7 @@ Mock is also the default in `config.example.yaml` (`mock: true`).
 ## Pi setup
 **New Pi? Follow [docs/PI_SETUP.md](docs/PI_SETUP.md)** (blank Pi 3B+ → running display). Short version, on Raspberry Pi OS Lite (64-bit; Trixie, or Bookworm Legacy) with user `pi` and hostname `pitv`:
 ```bash
-sudo apt install -y git   # not included in Lite
+sudo apt update && sudo apt install -y git   # not included in Lite
 git clone https://github.com/nizn1770/multimediaDisplay.git ~/pi-tv-display && cd ~/pi-tv-display && ./install.sh   # --dry-run to preview
 sudo reboot
 ```
